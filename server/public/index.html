@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rack Monitor</title>
+    <!-- Biblioteca MQTT.js -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+    <!-- Fonte Inter para visual moderno -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --bg-color: #12151e;
+            --card-bg: #1e222b;
+            --text-main: #e2e8f0;
+            --text-muted: #94a3b8;
+
+            /* Paleta Semântica */
+            --color-success: #10b981;
+            /* Verde */
+            --color-info: #3b82f6;
+            /* Azul */
+            --color-warning: #f59e0b;
+            /* Amarelo */
+            --color-danger: #ef4444;
+            /* Vermelho */
+            --color-neutral: #e2e8f0;
+            /* Branco/Cinza */
+
+            --border-color: #334155;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 2rem;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 1100px;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 2rem;
+        }
+
+        .logo-area {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .logo-badge {
+            background-color: var(--color-info);
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 700;
+            padding: 4px 8px;
+            border-radius: 6px;
+            letter-spacing: 1px;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            font-weight: 600;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+
+        .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: var(--color-danger);
+            transition: background-color 0.3s;
+        }
+
+        .dot.online {
+            background-color: var(--color-success);
+            box-shadow: 0 0 10px var(--color-success);
+        }
+
+        .grid-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        .card-label {
+            font-size: 0.75rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 0.5rem;
+        }
+
+        /* Classe base do valor com correção de UX */
+        .card-value {
+            font-size: 1.25rem;
+            font-weight: 600;
+            color: var(--color-neutral);
+            word-break: break-word;
+            overflow-wrap: break-word;
+            font-size: clamp(1rem, 2vw, 1.25rem);
+        }
+
+        /* Classes utilitárias de cor */
+        .text-success {
+            color: var(--color-success);
+        }
+
+        .text-info {
+            color: var(--color-info);
+        }
+
+        .text-warning {
+            color: var(--color-warning);
+        }
+
+        .text-danger {
+            color: var(--color-danger);
+        }
+
+        .text-neutral {
+            color: var(--color-neutral);
+        }
+
+        /* Classes de borda (para destacar o card inteiro) */
+        .card-border-success {
+            border-color: var(--color-success);
+            box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+        }
+
+        .card-border-danger {
+            border-color: var(--color-danger);
+            box-shadow: 0 0 15px rgba(239, 68, 68, 0.2);
+        }
+
+        .card-border-warning {
+            border-color: var(--color-warning);
+            box-shadow: 0 0 15px rgba(245, 158, 11, 0.2);
+        }
+
+        .card-border-info {
+            border-color: var(--color-info);
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.2);
+        }
+
+        .controls {
+            display: flex;
+            gap: 1rem;
+            margin-bottom: 2rem;
+            flex-wrap: wrap;
+        }
+
+        button {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0.75rem 1.5rem;
+            border: none;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s, transform 0.1s;
+            color: white;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:active {
+            transform: scale(0.98);
+        }
+
+        .btn-armar {
+            background-color: var(--color-info);
+        }
+
+        .btn-desarmar {
+            background-color: var(--color-warning);
+        }
+
+        .btn-teste {
+            background-color: #475569;
+        }
+
+        .btn-reset {
+            background-color: #475569;
+        }
+
+        .section-title {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-bottom: 1rem;
+        }
+
+        .box-container {
+            background-color: #0f111a;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            min-height: 150px;
+            margin-bottom: 2rem;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .placeholder-text {
+            font-size: 0.85rem;
+            color: #475569;
+            font-style: italic;
+        }
+
+        .log-item {
+            font-size: 0.85rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #1e293b;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .log-item:last-child {
+            border-bottom: none;
+        }
+
+        footer {
+            text-align: center;
+            font-size: 0.75rem;
+            color: #475569;
+            margin-top: 2rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <header>
+            <div class="logo-area">
+                <span class="logo-badge">RACK</span>
+                <h1>Rack Monitor</h1>
+            </div>
+            <div class="status-indicator">
+                <div id="connection-dot" class="dot"></div>
+                <span id="connection-text">Offline</span>
+            </div>
+        </header>
+
+        <!-- Primeira linha de cards -->
+        <div class="grid-cards">
+            <div class="card">
+                <span class="card-label">Modo Vigilante</span>
+                <span id="modo" class="card-value">--</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Estado Alarme</span>
+                <span id="estado" class="card-value">--</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Porta</span>
+                <span id="porta" class="card-value">--</span>
+            </div>
+            <div class="card">
+                <span class="card-label">IP do ESP32</span>
+                <span id="ip" class="card-value">--</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Último UID</span>
+                <span id="uid" class="card-value">--</span>
+            </div>
+        </div>
+
+        <!-- Segunda linha de cards (Contadores) -->
+        <div class="grid-cards">
+            <div class="card">
+                <span class="card-label">Acessos RFID</span>
+                <span id="acessos" class="card-value large">0</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Invasões</span>
+                <span id="invasoes" class="card-value large">0</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Rearmes Bloqueados</span>
+                <span id="bloqueios" class="card-value large">0</span>
+            </div>
+        </div>
+
+        <!-- Botões de Controle -->
+        <div class="controls">
+            <button class="btn-armar" onclick="enviarComando('ARMAR')">🔒 Armar</button>
+            <button class="btn-desarmar" onclick="enviarComando('DESARMAR')">🔓 Desarmar</button>
+            <button class="btn-teste" onclick="enviarComando('TESTE')">🔧 Modo Teste</button>
+            <button class="btn-reset" onclick="enviarComando('RESET')">🔄 Reset</button>
+        </div>
+
+        <!-- Área de Últimos Eventos -->
+        <div class="section-title">Últimos eventos</div>
+        <div class="box-container" id="log-eventos">
+            <span class="placeholder-text">Aguardando eventos...</span>
+        </div>
+
+        <!-- Área de Histórico -->
+        <div class="section-title">Histórico de status</div>
+        <div class="box-container" id="log-historico">
+            <span class="placeholder-text">Aguardando dados do ESP32...</span>
+        </div>
+
+        <footer>
+            Rack Monitor v2.0 · Docker · ---
+        </footer>
+    </div>
+
+    <script>
+        const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
+        const topicStatus = 'rack/status';
+        const topicComando = 'rack/comando';
+        const topicLogs = 'rack/logs';
+
+        let client;
+        let intervaloPolling;
+        let aguardandoResposta = false;
+
+        function conectar() {
+            const clientId = 'WebDash-' + Math.random().toString(16).substr(2, 8);
+            client = mqtt.connect(brokerUrl, { clientId: clientId });
+
+            client.on('connect', () => {
+                document.getElementById('connection-dot').classList.add('online');
+                document.getElementById('connection-text').innerText = 'Online';
+
+                client.subscribe(topicStatus);
+                client.subscribe(topicLogs);
+
+                if (intervaloPolling) clearInterval(intervaloPolling);
+                intervaloPolling = setInterval(() => {
+                    if (client && client.connected && !aguardandoResposta) {
+                        aguardandoResposta = true;
+                        client.publish(topicComando, 'STATUS');
+                        setTimeout(() => { aguardandoResposta = false; }, 1500);
+                    }
+                }, 2000);
+            });
+
+            client.on('message', (topic, message) => {
+                if (topic === topicStatus) {
+                    aguardandoResposta = false;
+                    try {
+                        const data = JSON.parse(message.toString());
+                        atualizarTela(data);
+                    } catch (e) { }
+                }
+                else if (topic === topicLogs) {
+                    try {
+                        const logData = JSON.parse(message.toString());
+                        // Verifica se a mensagem é de transição de estado para ir ao Histórico
+                        const isHistorico = logData.msg.startsWith("Estado alterado:");
+                        adicionarLog(logData.msg, logData.ts, isHistorico);
+                    } catch (e) { }
+                }
+            });
+
+            client.on('close', () => {
+                document.getElementById('connection-dot').classList.remove('online');
+                document.getElementById('connection-text').innerText = 'Offline';
+                if (intervaloPolling) clearInterval(intervaloPolling);
+            });
+        }
+
+        function atualizarTela(data) {
+            if (data.status) return;
+
+            // --- Atualiza Textos ---
+            document.getElementById('modo').innerText = data.modo || '--';
+            document.getElementById('porta').innerText = data.porta ? 'Aberta' : 'Fechada';
+            document.getElementById('uid').innerText = data.uid || '--';
+            document.getElementById('ip').innerText = data.ip || '--';
+
+            document.getElementById('acessos').innerText = data.acessos || 0;
+            document.getElementById('invasoes').innerText = data.invasoes || 0;
+            document.getElementById('bloqueios').innerText = data.rearmes || 0;
+
+            // --- Lógica Semântica de Cores ---
+
+            // 1. Card do Modo (Azul se DESARMADO, Branco se ARMADO)
+            const elModo = document.getElementById('modo');
+            elModo.className = 'card-value ' + (data.modo === 'DESARMADO' ? 'text-info' : 'text-neutral');
+
+            // 2. Card do Estado (A lógica mais importante)
+            const elEstado = document.getElementById('estado');
+            const cardEstado = elEstado.closest('.card');
+            elEstado.innerText = data.estado || '--';
+
+            // Limpa classes antigas
+            cardEstado.className = 'card';
+            elEstado.className = 'card-value';
+
+            if (data.estado === 'SEGURO' || data.estado === 'ACESSO_RFID') {
+                elEstado.classList.add('text-success');
+                cardEstado.classList.add('card-border-success');
+            }
+            else if (data.estado === 'EMERGENCIA' || data.estado === 'INVASAO' || data.estado === 'EMERGENCIA_RACK' || data.estado === 'INVASAO_SALA') {
+                elEstado.classList.add('text-danger');
+                cardEstado.classList.add('card-border-danger');
+            }
+            else if (data.estado === 'AVISO SALA' || data.estado === 'AVISO_SALA' || data.estado === 'APROXIMACAO' || data.estado === 'APROXIMACAO_RACK') {
+                elEstado.classList.add('text-warning');
+                cardEstado.classList.add('card-border-warning');
+            }
+
+            // 3. Card da Porta (Vermelho se aberta em modo armado, Amarelo se manutenção, Branco se fechada)
+            const elPorta = document.getElementById('porta');
+            if (data.porta) {
+                if (data.modo === 'ARMADO') {
+                    elPorta.className = 'card-value text-danger';
+                } else {
+                    elPorta.className = 'card-value text-warning';
+                }
+            } else {
+                elPorta.className = 'card-value text-neutral';
+            }
+
+            // 4. Card de Invasões (Vermelho se > 0)
+            const elInvasoes = document.getElementById('invasoes');
+            elInvasoes.className = 'card-value large ' + (data.invasoes > 0 ? 'text-danger' : 'text-neutral');
+
+            // 5. Card de Acessos (Azul se > 0)
+            const elAcessos = document.getElementById('acessos');
+            elAcessos.className = 'card-value large ' + (data.acessos > 0 ? 'text-info' : 'text-neutral');
+        }
+
+        function adicionarLog(mensagem, time, isHistorico) {
+            const containerId = isHistorico ? 'log-historico' : 'log-eventos';
+            const container = document.getElementById(containerId);
+
+            const placeholder = container.querySelector('.placeholder-text');
+            if (placeholder) placeholder.remove();
+
+            // O ESP32 envia o ts no formato "DD/MM HH:MM:SS". Se não vier, usa a hora local.
+            let displayTime = time;
+            if (!displayTime || displayTime.trim() === "" || displayTime === "undefined") {
+                displayTime = new Date().toLocaleTimeString('pt-BR');
+            }
+
+            const logDiv = document.createElement('div');
+            logDiv.className = 'log-item';
+
+            const corTexto = isHistorico ? 'color: #e2e8f0;' : 'color: #cbd5e1;';
+
+            logDiv.innerHTML = `
+            <span style="${corTexto}">${mensagem}</span>
+            <span style="color:#94a3b8; font-family: monospace;">${displayTime}</span>
+        `;
+
+            container.prepend(logDiv);
+
+            if (container.children.length > 20) {
+                container.lastChild.remove();
+            }
+        }
+
+        function enviarComando(comando) {
+            if (client && client.connected) {
+                client.publish(topicComando, comando);
+            } else {
+                alert('Erro: Não conectado ao broker MQTT.');
+            }
+        }
+
+        window.onload = conectar;
+    </script>
+
+</body>
+
+</html>
