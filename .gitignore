@@ -1,0 +1,63 @@
+# ==========================================
+# SISTEMA OPERACIONAL E EDITORES
+# ==========================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ==========================================
+# VS CODE
+# ==========================================
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# ==========================================
+# AMBIENTE ARDUINO / ESP32 / PLATFORMIO
+# ==========================================
+# Builds e binários
+.pio/
+.pioenvs/
+.piolibdeps/
+build/
+*.bin
+*.elf
+*.hex
+*.map
+*.d
+
+# Bibliotecas locais (se usadas)
+lib/
+
+# ==========================================
+# NODE.JS / SERVIDOR WEB (se for usar no futuro)
+# ==========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+.env
+.env.local
+.env.*.local
+
+# ==========================================
+# SEGURANÇA E SEGREDOS
+# ==========================================
+# Nunca suba senhas de Wi-Fi, tokens ou chaves
+secrets.h
+config.h
+credentials.json
+
+# ==========================================
+# LOGS E TEMPORÁRIOS
+# ==========================================
+*.log
+*.tmp
+*.bak
+tmp/
+temp/
