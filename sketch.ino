@@ -1,8 +1,20 @@
 // =========================================================================
-// SISTEMA DE MONITORAMENTO DE RACK - v6.3
+// SISTEMA DE MONITORAMENTO DE RACK - v6.4 (corrigido)
 // Modularizado + Doxygen + Wi-Fi/MQTT + LWT + Retain + NVS + Comandos
 // =========================================================================
 // CHANGELOG
+//   v6.4 - CORREÇÕES:
+//          [1] Dupla publicação por STATUS (cache atualizado em _publicar).
+//          [2] Rate limit de STATUS (2s) e RESET com token.
+//          [3] LWT em tópico dedicado (rack/status/lwt); republica status
+//              completo ao reconectar; log do motivo de desconexão.
+//          [4] Dirty flag para NVS (não grava se nada mudou).
+//          [5] Removida validação morta em LeitorRFID::ler().
+//          [6] jsonEscape() + setBufferSize(512) no PubSubClient.
+//          [7] Primeira leitura de PIR/LDR não gera borda falsa.
+//          [8] SensorDHT simplificado (sem leitura dupla).
+//          [9] Deduplicação de cartões na NVS.
+//         [10] Documentação de pinos atualizada (DHT no 13).
 //   v6.3 - LWT (Last Will): broker publica {"status":"offline"} se ESP32 cair.
 //          Retain flag: novos assinantes recebem o último estado imediatamente.
 //          NVS (Preferences): limiar, timeout e contadores persistem após reboot.
@@ -19,10 +31,11 @@
 // [ OCUPADOS ]
 //  GPIO | Módulo       | Função                    | Fio           | Observação
 //  -----|--------------|---------------------------|---------------|----------------------
-//   0   | LedRGB       | Canal B                   | Azul          | Strapping (boot)
+//   0   | LedRGB       | Canal B                   | Azul          | Strapping (boot) — ATENÇÃO
 //   2   | Audio        | Buzzer D                  | Rosa          | Strapping (boot)
 //   4   | LeitorRFID   | RST                       | Laranja       |
 //   5   | LeitorRFID   | SS (SDA)                  | Rosa          |
+//  13   | DHT22        | Dados (SDA)               | Amarelo       | Sensor temp/umid
 //  14   | Botao        | Pushbutton                | Laranja       | INPUT_PULLUP
 //  15   | Audio        | Buzzer E                  | Roxo Escuro   | Strapping (boot)
 //  16   | Ultrassonico | ECHO                      | Laranja       |
@@ -40,7 +53,6 @@
 //
 // [ LIVRES PARA EXPANSÃO ]
 //  - GPIO 12 : Livre (Strapping — cuidado no boot)
-//  - GPIO 13 : Livre (Ótimo para PWM/Saída)
 //  - GPIO 26 : Livre (Ótimo para PWM/Saída)
 //  - GPIO 35 : Livre (Apenas Entrada Analógica)
 //  - GPIO 36 : Livre (Apenas Entrada Analógica)
@@ -56,68 +68,25 @@
 //  - I2C (21, 22): reservados ao barramento compartilhado OLED + RTC.
 //  - Antes de adicionar periférico, verificar seção "LIVRES".
 //  - Todo pino novo deve ser adicionado ao namespace `Pins` abaixo.
+//  - ATENÇÃO: LED_B no GPIO 0 (strapping). Considere migrar para GPIO 26.
 // =========================================================================
 
 // =========================================================================
 // ARQUITETURA DE SOFTWARE
 // =========================================================================
-// FLUXO DE DADOS (loop principal)
+//  Sensores → struct LeiturasSensores + Eventos → Alarme (única fonte de
+//  verdade) → Atuadores (render) + NotificadorMQTT (observador/publicador).
+//  NVS é persistência passiva. loop() só orquestra.
 //
-//   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
-//   │  Sensores    │   │  Eventos     │   │  Atuadores   │
-//   │  (update)    │   │  (confirmados)│  │  (render)    │
-//   └──────┬───────┘   └──────┬───────┘   └──────▲───────┘
-//          │                  │                  │
-//          ▼                  ▼                  │
-//   ┌──────────────────────────────────────────┐ │
-//   │  struct LeiturasSensores                 │ │
-//   │    + EventoRFID  + EventoBotao           │ │
-//   └──────────────────┬───────────────────────┘ │
-//                      │                         │
-//                      ▼                         │
-//              ┌──────────────┐                  │
-//              │ class Alarme │──────────────────┘
-//              │ (máquina de  │  decide estado,
-//              │  estados)    │  modo, bloqueios
-//              └──────┬───────┘
-//                     │ observa transições
-//                     ▼
-//              ┌──────────────┐
-//              │ Notificador  │→ MQTT (broker externo)
-//              │ MQTT         │← comandos remotos
-//              └──────────────┘
-//
-// RESPONSABILIDADES POR CLASSE
-//  - LDR, Ultrassonico, Porta, PIR  : ler hardware + filtrar
-//  - Botao, LeitorRFID              : emitir EventoXxx quando há transição
-//  - Alarme                         : única fonte de verdade de estado/modo
-//  - DisplayOLED, LedRGB, Audio     : apenas renderizar o que o Alarme decidiu
-//  - Relogio                        : timestamp (RTC ou millis como fallback)
-//  - NotificadorMQTT                : publica transições + recebe comandos
-//  - NVS (Preferences)              : persiste config e contadores
-//
-// REGRAS DE OURO (respeitar ao evoluir)
+// REGRAS DE OURO
 //  1. Sensores NÃO decidem nada — só medem e filtram.
 //  2. Atuadores NÃO leem sensores — só consomem estado.
 //  3. Alarme NÃO acessa hardware direto — recebe struct/eventos.
-//  4. Eventos são "fatos" (botão foi pressionado), não "ações" (armar).
-//  5. Toda transição de estado é logada com nível (INFO/ALERT/CRIT).
-//  6. loop() só orquestra: update sensores → coleta eventos → alarme → render.
-//  7. MQTT é OBSERVADOR do Alarme; comandos remotos pedem via API pública.
-//  8. NVS é persistência PASSIVA; não interfere na lógica do Alarme.
-//
-// PONTOS DE EXTENSÃO
-//  - Novo sensor?    → classe própria + campo em LeiturasSensores.
-//  - Novo evento?    → enum EventoXxx + struct + tratamento em Alarme.
-//  - Novo atuador?   → classe com render() chamada no loop().
-//  - Novo comando?   → processarComandoSerial() + HELP atualizado.
-//  - Novo cartão?    → CARTAO_AUTORIZADO_N + comparar em LeitorRFID::ler().
-//  - Novo tópico MQTT? → ajustar NotificadorMQTT::update().
-//  - Nova config NVS? → salvarConfig()/carregarConfig() em Preferences.
-//
-// DEPENDÊNCIAS EXTERNAS
-//  - MFRC522, Adafruit GFX, Adafruit SSD1306, RTClib, PubSubClient
-//  - Wire, SPI, Preferences (Preferences é nativa do ESP32)
+//  4. Eventos são "fatos", não "ações".
+//  5. Toda transição é logada com nível (INFO/ALERT/CRIT).
+//  6. loop() só orquestra.
+//  7. MQTT é OBSERVADOR do Alarme.
+//  8. NVS é persistência PASSIVA.
 // =========================================================================
 
 #include <Wire.h>
@@ -129,12 +98,13 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Preferences.h>
+#include <vector>
+#include <DHT.h>
 
 // =========================================================================
 // CONFIGURAÇÃO GLOBAL
 // =========================================================================
 
-/** @brief Mapeamento de GPIOs. Única fonte de verdade do hardware. */
 namespace Pins {
   constexpr uint8_t RFID_SS   = 5;
   constexpr uint8_t RFID_RST  = 4;
@@ -158,7 +128,6 @@ namespace Pins {
   constexpr uint8_t LED_B     = 0;
 }
 
-// Constantes gerais
 constexpr uint32_t PWM_FREQ       = 5000;
 constexpr uint8_t  PWM_RESOLUTION = 8;
 constexpr uint8_t  LARGURA_TELA   = 128;
@@ -183,9 +152,55 @@ constexpr unsigned long DEBOUNCE_PORTA_MS = 200;
 
 constexpr unsigned long DURACAO_AVISO_BLOQUEIO_MS = 4000;
 
-// Cartões autorizados
+// Limites ambientais (ASHRAE + margem de segurança)
+// Valores DEFAULT — podem ser sobrescritos pela NVS
+constexpr float TEMP_ALERTA_C_DEFAULT    = 30.0f;
+constexpr float TEMP_CRITICO_C_DEFAULT   = 35.0f;
+constexpr float UMID_ALERTA_PCT_DEFAULT  = 65.0f;
+constexpr float UMID_CRITICO_PCT_DEFAULT = 80.0f;
+
+constexpr float TEMP_HISTERESE  = 2.0f;
+constexpr float UMID_HISTERESE  = 5.0f;
+
+// Taxa de subida de temperatura
+constexpr float TAXA_ALERTA_C_POR_MIN = 1.0f;
+constexpr unsigned long INTERVALO_AMOSTRA_TAXA_MS = 60000UL;
+
+// Limiares efetivos (sobrescritos pela NVS no boot)
+float limiarTempAlerta  = TEMP_ALERTA_C_DEFAULT;
+float limiarTempCritico = TEMP_CRITICO_C_DEFAULT;
+float limiarUmidAlerta  = UMID_ALERTA_PCT_DEFAULT;
+float limiarUmidCritico = UMID_CRITICO_PCT_DEFAULT;
+
+// Flags de estado ambiental
+bool alertaTempAtivo  = false;
+bool criticoTempAtivo = false;
+bool alertaUmidAtivo  = false;
+bool criticoUmidAtivo = false;
+bool taxaTempAlerta   = false;
+
+// Estado ambiental consolidado (exposto ao Alarme e ao JSON)
+enum EstadoAmbiental { AMB_OK, AMB_ALERTA, AMB_CRITICO };
+EstadoAmbiental estadoAmbiental = AMB_OK;
+
+// Buzzer ambiental opcional (prioridade respeitada)
+#define ALARME_SONORO_AMBIENTAL 0
+
+// Amostragem da taxa de subida (uso interno de _verificarAmbiente)
+float         _tempAnteriorTaxa  = -999.0f;
+unsigned long _tempoAnteriorTaxa = 0;
+
+// [4] Flag global de dirty para NVS (usada por Alarme e loop)
+bool contadoresDirty = false;
+
 const String CARTAO_AUTORIZADO_1 = "01020304";
 const String CARTAO_AUTORIZADO_2 = "55667788";
+
+constexpr unsigned long WARMUP_LDR_MS = 1500;
+constexpr unsigned long WARMUP_PIR_MS = 1500;
+constexpr unsigned long WARMUP_US_MS  = 1500;
+
+std::vector<String> cartoesAutorizados;
 
 // =========================================================================
 // CONFIGURAÇÃO DE REDE (Wi-Fi + MQTT)
@@ -194,10 +209,17 @@ const char* WIFI_SSID     = "Wokwi-GUEST";
 const char* WIFI_PASSWORD = "";
 const char* MQTT_BROKER   = "broker.emqx.io";
 const int   MQTT_PORT     = 1883;
-const char* MQTT_TOPIC_STATUS = "rack/status";    // publicação de estado
-const char* MQTT_TOPIC_CMD    = "rack/comando";   // recepção de comandos
+
+const char* MQTT_TOPIC_STATUS = "rack_monitor_ABCD1234/status";
+const char* MQTT_TOPIC_LWT    = "rack_monitor_ABCD1234/status/lwt";
+const char* MQTT_TOPIC_CMD    = "rack_monitor_ABCD1234/comando";
+const char* MQTT_TOPIC_LOGS   = "rack_monitor_ABCD1234/logs";
+const char* MQTT_TOPIC_HB     = "rack_monitor_ABCD1234/heartbeat"; 
+
 const unsigned long MQTT_RETRY_MS = 5000;
-const char* MQTT_TOPIC_LOGS = "rack/logs";    // NOVO: tópico para logs detalhados
+
+// [2] Token para comandos destrutivos. TROQUE ESTE VALOR!
+const char* MQTT_RESET_TOKEN = "rack2026";
 
 // =========================================================================
 // ENUMS E STRUCTS
@@ -210,7 +232,7 @@ enum EstadoSistema {
   AVISO_SALA,
   APROXIMACAO_RACK,
   EMERGENCIA_RACK,
-  INVASAO_SALA,
+  INVASAO_SALA,   // reservado (não atribuído atualmente)
   ACESSO_RFID
 };
 
@@ -230,7 +252,7 @@ struct LeiturasSensores {
 };
 
 // =========================================================================
-// PERIFÉRICOS (instâncias globais dos drivers)
+// PERIFÉRICOS
 // =========================================================================
 Adafruit_SSD1306 display(LARGURA_TELA, ALTURA_TELA, &Wire, -1);
 RTC_DS3231       rtc;
@@ -241,7 +263,6 @@ bool rtcDisponivel = false;
 // =========================================================================
 // MÓDULO: RELÓGIO
 // =========================================================================
-
 class Relogio {
 public:
   bool begin() {
@@ -310,6 +331,9 @@ void logSerial(const String &nivel, const String &tag, const String &mensagem) {
   Serial.println(mensagem);
 }
 
+// Protótipo (implementação no final, após NotificadorMQTT)
+void enviarLogSite(const String &mensagem);
+
 // =========================================================================
 // MÓDULO: LDR
 // =========================================================================
@@ -319,9 +343,14 @@ public:
     pinMode(Pins::LDR_AO, INPUT);
     _estado = false;
     _tempoUltimaMudanca = 0;
+    _tempoInicio = millis();
   }
 
   void update() {
+    if (millis() - _tempoInicio < 1500) {
+      _estado = false;
+      return;
+    }
     int leitura = analogRead(Pins::LDR_AO);
     if (!_estado && leitura < LDR_LIMIAR_APAGA) {
       if (millis() - _tempoUltimaMudanca >= DEBOUNCE_LDR_MS) {
@@ -342,6 +371,7 @@ public:
 private:
   bool          _estado             = false;
   unsigned long _tempoUltimaMudanca = 0;
+  unsigned long _tempoInicio        = 0;
 };
 
 LDR ldr;
@@ -355,26 +385,33 @@ public:
     pinMode(Pins::TRIG, OUTPUT);
     pinMode(Pins::ECHO, INPUT);
     digitalWrite(Pins::TRIG, LOW);
+    _tempoInicio = millis();
+    _distancia   = 999.0f;
   }
 
   void update() {
+    if (millis() - _tempoInicio < 1500) {
+      _distancia = 999.0f;
+      return;
+    }
     float soma    = 0.0f;
     int   validas = 0;
     for (int i = 0; i < US_AMOSTRAS; i++) {
       float d = _medirBruto();
-      if (d > 0.0f && d < US_DIST_MAX_VALIDA) {
+      if (d >= 2.0f && d < US_DIST_MAX_VALIDA) {
         soma += d;
         validas++;
       }
       delayMicroseconds(60);
     }
-    _distancia = (validas > 0) ? (soma / validas) : 999.0f;
+    if (validas > 0) _distancia = soma / validas;
   }
 
   float distancia() const { return _distancia; }
 
 private:
   float _distancia = 999.0f;
+  unsigned long _tempoInicio = 0;
 
   float _medirBruto() const {
     digitalWrite(Pins::TRIG, LOW);
@@ -429,8 +466,24 @@ Porta porta;
 // =========================================================================
 class PIR {
 public:
-  void begin() { pinMode(Pins::PIR, INPUT); }
-  bool detectaMovimento() const { return digitalRead(Pins::PIR) == HIGH; }
+  void begin() {
+    pinMode(Pins::PIR, INPUT);
+    _tempoInicio = millis();
+  }
+
+  void update() {
+    if (millis() - _tempoInicio < 1500) {
+      _movimento = false;
+      return;
+    }
+    _movimento = (digitalRead(Pins::PIR) == HIGH);
+  }
+
+  bool detectaMovimento() const { return _movimento; }
+
+private:
+  bool          _movimento   = false;
+  unsigned long _tempoInicio = 0;
 };
 
 PIR pir;
@@ -510,7 +563,7 @@ private:
 Botao botao;
 
 // =========================================================================
-// MÓDULO: RFID
+// MÓDULO: RFID  [5] validação removida do leitor
 // =========================================================================
 class LeitorRFID {
 public:
@@ -532,7 +585,7 @@ public:
 
     ev.novo   = true;
     ev.uid    = uid;
-    ev.valido = (uid == CARTAO_AUTORIZADO_1 || uid == CARTAO_AUTORIZADO_2);
+    ev.valido = false;   // validação fica em Alarme::_tratarRFID
 
     rfid.PICC_HaltA();
     rfid.PCD_StopCrypto1();
@@ -832,6 +885,36 @@ private:
 DisplayOLED oled;
 
 // =========================================================================
+// MÓDULO: DHT22  [8] simplificado
+// =========================================================================
+#define DHT_PIN     13
+#define DHT_TYPE    DHT22
+
+class SensorDHT {
+public:
+  DHT dht;
+
+  SensorDHT() : dht(DHT_PIN, DHT_TYPE) {}
+
+  void begin() {
+    dht.begin();
+    logSerial("INFO", "DHT", "Sensor DHT22 inicializado no GPIO 13.");
+  }
+
+  float temperatura() {
+    float t = dht.readTemperature();
+    return isnan(t) ? -999.0f : t;
+  }
+
+  float umidade() {
+    float u = dht.readHumidity();
+    return isnan(u) ? -999.0f : u;
+  }
+};
+
+SensorDHT dht;
+
+// =========================================================================
 // MÓDULO: ALARME (máquina de estados)
 // =========================================================================
 class Alarme {
@@ -863,6 +946,7 @@ public:
 
   bool resetContadoresPendente = false;
   bool modoTestePendente       = false;
+  bool audioPararPendente      = false;
 
   float limiarDistancia = 50.0f;
 
@@ -912,17 +996,25 @@ public:
   String nomeModo() const { return (modo == ARMADO) ? "ARMADO" : "DESARMADO"; }
   String nomeEstadoAtual() const { return _nomeEstado(estadoAtual); }
 
-  bool audioPararPendente = false;
-
 private:
   bool _estadoAnteriorPIR   = false;
   bool _estadoAnteriorLDR   = false;
   bool _portaEstadoAnterior = false;
+  bool _primeiraLeitura     = true;   // [7]
 
   void _logBordas(const LeiturasSensores &s) {
+    // [7] Na primeira leitura, apenas registra o estado, sem gerar borda falsa
+    if (_primeiraLeitura) {
+      _estadoAnteriorPIR = s.movimento;
+      _estadoAnteriorLDR = s.luzAcesa;
+      _primeiraLeitura   = false;
+      return;
+    }
+
     if (s.movimento != _estadoAnteriorPIR) {
       if (modo == DESARMADO && s.movimento) {
         contadorMovimentosManutencao++;
+        contadoresDirty = true;   // [4]
         logSerial("INFO", "MANUT", "Movimento em modo manutencao (auditoria).");
       } else {
         logSerial("INFO", "SENSOR",
@@ -938,10 +1030,11 @@ private:
   }
 
   void _logPorta(Porta &porta) {
-    bool aberta = porta.estaAberta();  // ← 'aberta' É DECLARADA AQUI
+    bool aberta = porta.estaAberta();
     if (aberta != _portaEstadoAnterior) {
       if (aberta) {
         contadorAberturasPorta++;
+        contadoresDirty = true;   // [4]
         if (modo == ARMADO) {
           logSerial("ALERT", "PORTA", "!!! PORTA ABERTA (total: " + String(contadorAberturasPorta) + ") !!!");
           enviarLogSite("ALERTA: Porta do Rack ABERTA!");
@@ -958,13 +1051,22 @@ private:
   }
 
   void _tratarRFID(const EventoRFID &ev, Porta &porta, Audio &audio) {
-    if (ev.valido) {
+    uidUltimoDesarme = ev.uid;
+
+    bool valido = false;
+    for (const String &card : cartoesAutorizados) {
+      if (card == ev.uid) { valido = true; break; }
+    }
+
+    if (valido) {
       enviarLogSite("Cartao Autorizado: " + ev.uid);
       contadorAcessosValidos++;
+      contadoresDirty = true;   // [4]
       logSerial("INFO", "RFID", "Cartao AUTORIZADO: " + ev.uid);
       _alternarModo(ev.uid, porta, audio);
     } else {
       logSerial("WARN", "RFID", "Acesso NEGADO! Cartao nao cadastrado: " + ev.uid);
+      enviarLogSite("Cartao NEGADO: " + ev.uid);
       audio.beepErro();
     }
   }
@@ -982,7 +1084,7 @@ private:
         modoTestePendente = true;
         break;
       case BOTAO_CURTO:
-        logSerial("INFO", "BOTAO", "Clique CURTO: contadores zerados.");
+        logSerial("INFO", "BOTAO", "Clique CURTO: reset operacional.");
         resetContadoresPendente = true;
         audio.beepCurto(1200, 100);
         break;
@@ -997,6 +1099,7 @@ private:
       uidUltimoDesarme   = uid;
       aviso5minDisparado = false;
       contadorDesarmes++;
+      contadoresDirty    = true;   // [4]
       motivoBloqueio     = "";
       logSerial("INFO", "VIGILANTE",
         "DESARMADO por UID: " + uid +
@@ -1010,13 +1113,16 @@ private:
   bool _tentarArmar(Porta &porta, Audio &audio) {
     if (porta.estaAberta()) {
       contadorRearmesBloqueados++;
+      contadoresDirty    = true;   // [4]
       motivoBloqueio     = "Feche a porta!";
       tempoBloqueioAtivo = millis();
+
       logSerial("WARN", "VIGILANTE",
         "REARME BLOQUEADO: porta aberta | " +
         String(contadorRearmesBloqueados) + " bloqueio(s) ate agora.");
       logSerial("WARN", "VIGILANTE",
         "Feche a porta e passe o cartao novamente para armar.");
+      enviarLogSite("REARME BLOQUEADO: porta aberta!");
       audio.beepErro();
       return false;
     }
@@ -1026,6 +1132,7 @@ private:
     motivoBloqueio      = "";
     logSerial("INFO", "VIGILANTE",
       "REARMADO | Duracao do desarme: " + String(duracaoUltimoDesarme) + "s");
+    enviarLogSite("Sistema REARMADO com sucesso.");
     audio.beepSucesso();
     estadoAtual     = SEGURO;
     estadoAnterior  = SEGURO;
@@ -1058,29 +1165,22 @@ private:
     EstadoSistema candidato;
     bool rfidRecente = rfidEv.novo || (millis() - ultimoUIDtempoRFID < 2500);
 
-    // Nova lógica profissional:
-    // 1. Porta aberta = EMERGENCIA_RACK (Invasão física do perímetro)
-    // 2. Movimento na sala = AVISO_SALA (Apenas um alerta, não invasão)
-    
     if (rfidRecente) {
       candidato = ACESSO_RFID;
-    } 
+    }
     else if (s.portaAberta) {
-      // Se a porta abriu e o sistema estava armado, isso é uma violação física!
-      candidato = EMERGENCIA_RACK; 
-    } 
+      candidato = EMERGENCIA_RACK;
+    }
     else if (s.movimento) {
-      // Movimento na sala é apenas um aviso, não uma invasão do rack
-      candidato = AVISO_SALA; 
-    } 
+      candidato = AVISO_SALA;
+    }
     else if (s.distancia < limiarDistancia && s.distancia > 0) {
       candidato = APROXIMACAO_RACK;
-    } 
+    }
     else {
       candidato = SEGURO;
     }
 
-    // O resto da lógica de debounce continua igual...
     bool critico = (candidato == EMERGENCIA_RACK);
     bool urgente = (candidato == ACESSO_RFID);
 
@@ -1106,16 +1206,16 @@ private:
 
       logSerial(nivel, "ESTADO",
         "Transicao: " + _nomeEstado(estadoAnterior) + " -> " + _nomeEstado(estadoAtual));
-        enviarLogSite("Estado alterado: " + _nomeEstado(estadoAnterior) + " -> " + _nomeEstado(estadoAtual));
+      enviarLogSite("Estado alterado: " + _nomeEstado(estadoAnterior) + " -> " + _nomeEstado(estadoAtual));
 
-      // CONTADOR DE INVASÕES: Só conta se a porta do rack for aberta (violação)
       if (estadoAtual == EMERGENCIA_RACK) {
         contadorInvasoes++;
+        contadoresDirty = true;   // [4]
         logSerial("CRIT", "SEGURANCA", "!!! INVASAO FISICA DETECTADA NO RACK !!!");
       }
-      // CONTADOR DE APROXIMAÇÕES: Mantém
       if (estadoAtual == APROXIMACAO_RACK) {
         contadorAproximacoes++;
+        contadoresDirty = true;   // [4]
       }
 
       audioPararPendente = true;
@@ -1125,7 +1225,7 @@ private:
 
   static String _nomeEstado(EstadoSistema e) {
     switch (e) {
-      case SEGURO:           return "SEGURO";
+      case SEGURO:           return "NORMAL";
       case ACESSO_RFID:      return "ACESSO RFID";
       case AVISO_SALA:       return "AVISO SALA";
       case APROXIMACAO_RACK: return "APROXIMACAO RACK";
@@ -1143,10 +1243,6 @@ Alarme alarme;
 // =========================================================================
 Preferences prefs;
 
-/**
- * @brief Salva config e contadores na flash (NVS).
- * Chamar ao alterar limiar/timeout e periodicamente para contadores.
- */
 void salvarConfig() {
   prefs.begin("rack", false);
   prefs.putFloat("limiar",  alarme.limiarDistancia);
@@ -1155,14 +1251,44 @@ void salvarConfig() {
   prefs.putUInt ("aberturas", alarme.contadorAberturasPorta);
   prefs.putUInt ("acessos",   alarme.contadorAcessosValidos);
   prefs.putUInt ("desarmes",  alarme.contadorDesarmes);
+  prefs.putUInt ("rearmes",   alarme.contadorRearmesBloqueados);
+  prefs.putFloat("t_alert", limiarTempAlerta);
+  prefs.putFloat("t_crit",  limiarTempCritico);
+  prefs.putFloat("u_alert", limiarUmidAlerta);
+  prefs.putFloat("u_crit",  limiarUmidCritico);
   prefs.end();
   logSerial("INFO", "NVS", "Configuracoes salvas na flash.");
 }
 
-/**
- * @brief Carrega config e contadores da flash (NVS).
- * Chamar no setup() antes de começar a lógica principal.
- */
+// [9] Deduplicação de cartões
+void carregarCartoes() {
+  cartoesAutorizados.clear();
+
+  auto adicionarSeNovo = [](const String &uid) {
+    for (const String &c : cartoesAutorizados) {
+      if (c == uid) return;
+    }
+    cartoesAutorizados.push_back(uid);
+  };
+
+  prefs.begin("rack", true);
+
+  adicionarSeNovo(CARTAO_AUTORIZADO_1);
+  adicionarSeNovo(CARTAO_AUTORIZADO_2);
+
+  int total = prefs.getInt("total_cards", 0);
+  for (int i = 0; i < total; i++) {
+    String chave = "card_" + String(i);
+    String uid = prefs.getString(chave.c_str(), "");
+    if (uid.length() > 0) {
+      adicionarSeNovo(uid);
+      logSerial("INFO", "NVS", "Cartao carregado: " + uid);
+    }
+  }
+  prefs.end();
+  logSerial("INFO", "NVS", "Total de cartoes carregados: " + String(cartoesAutorizados.size()));
+}
+
 void carregarConfig() {
   prefs.begin("rack", true);
   alarme.limiarDistancia        = prefs.getFloat("limiar", 50.0f);
@@ -1171,12 +1297,17 @@ void carregarConfig() {
   alarme.contadorAberturasPorta = prefs.getUInt ("aberturas", 0);
   alarme.contadorAcessosValidos = prefs.getUInt ("acessos", 0);
   alarme.contadorDesarmes       = prefs.getUInt ("desarmes", 0);
+  alarme.contadorRearmesBloqueados = prefs.getUInt("rearmes", 0);
+  limiarTempAlerta  = prefs.getFloat("t_alert", TEMP_ALERTA_C_DEFAULT);
+  limiarTempCritico = prefs.getFloat("t_crit",  TEMP_CRITICO_C_DEFAULT);
+  limiarUmidAlerta  = prefs.getFloat("u_alert", UMID_ALERTA_PCT_DEFAULT);
+  limiarUmidCritico = prefs.getFloat("u_crit",  UMID_CRITICO_PCT_DEFAULT);
   prefs.end();
   logSerial("INFO", "NVS", "Configuracoes carregadas da flash.");
 }
 
 // =========================================================================
-// MÓDULO: NOTIFICADOR MQTT (observador do Alarme + comandos remotos)
+// MÓDULO: NOTIFICADOR MQTT
 // =========================================================================
 class NotificadorMQTT {
 public:
@@ -1195,9 +1326,10 @@ public:
     } else {
       Serial.println(F(" FALHOU (WiFi indisponivel, seguindo offline)"));
     }
-    _client.setServer(MQTT_BROKER, MQTT_PORT);
 
-    // Callback para comandos remotos
+    _client.setServer(MQTT_BROKER, MQTT_PORT);
+    _client.setBufferSize(512);   // [6]
+
     _client.setCallback([this](char* topic, byte* payload, unsigned int length) {
       _tratarComando(topic, payload, length);
     });
@@ -1213,25 +1345,31 @@ public:
       return;
     }
 
-    // 2. MQTT (conexão com LWT)
+    // 2. MQTT
     if (!_client.connected()) {
+      // [3] log de desconexão
+      if (_estavaConectado) {
+        logSerial("WARN", "MQTT", "Desconectado do broker (rc=" + String(_client.state()) + ").");
+        _estavaConectado = false;
+      }
+
       if (millis() - _ultimoTempoReconexao > MQTT_RETRY_MS) {
         _ultimoTempoReconexao = millis();
         _client.disconnect();
         String clientId = "RackESP32-" + String((uint32_t)ESP.getEfuseMac(), HEX);
         Serial.print(F("[MQTT] Conectando ao broker... "));
 
-        const char* lwtTopic = MQTT_TOPIC_STATUS;
-        const char* lwtMsg   = "{\"status\":\"offline\"}";
-
+        // [3] LWT em tópico dedicado
         if (_client.connect(clientId.c_str(), nullptr, nullptr,
-                            lwtTopic, 1, true, lwtMsg)) {
+                            MQTT_TOPIC_LWT, 1, true, "{\"status\":\"offline\"}")) {
           Serial.println(F("OK"));
-          // Publica "online" retido imediatamente
-          _client.publish(MQTT_TOPIC_STATUS, "{\"status\":\"online\"}", true);
-          // Assina comandos remotos
+          _estavaConectado = true;
+          _client.publish(MQTT_TOPIC_LWT, "{\"status\":\"online\"}", true);
           _client.subscribe(MQTT_TOPIC_CMD);
           logSerial("INFO", "MQTT", String("Inscrito em: ") + MQTT_TOPIC_CMD);
+
+          // [3] republica status completo imediatamente após conectar
+          _publicar(true);
         } else {
           Serial.print(F("Falha rc=")); Serial.println(_client.state());
         }
@@ -1241,12 +1379,18 @@ public:
 
     _client.loop();
 
-    // 3. Publica transição (apenas se algo mudou)
+    // 3. Publica transição (cache atualizado dentro de _publicar [1])
     if (alarme.estadoAtual != _ultimoEstadoPublicado ||
         alarme.modo       != _ultimoModoPublicado) {
       _publicar();
-      _ultimoEstadoPublicado = alarme.estadoAtual;
-      _ultimoModoPublicado   = alarme.modo;
+    }
+
+    // Heartbeat
+    if (millis() - _ultimoHeartbeat > INTERVALO_HEARTBEAT_MS) {
+      _ultimoHeartbeat = millis();
+      String hbPayload = "{\"ts\":\"" + relogio.timestampISO() +
+                         "\",\"uptime_s\":" + String(millis() / 1000) + "}";
+      _client.publish(MQTT_TOPIC_HB, hbPayload.c_str());
     }
   }
 
@@ -1262,11 +1406,17 @@ private:
   WiFiClient     _wifiClient;
   PubSubClient   _client{_wifiClient};
   unsigned long  _ultimoTempoReconexao = 0;
+  unsigned long  _ultimoHeartbeat      = 0;
+  const unsigned long INTERVALO_HEARTBEAT_MS = 30000UL;
   EstadoSistema  _ultimoEstadoPublicado = SEGURO;
   ModoVigilante  _ultimoModoPublicado   = ARMADO;
 
+  bool           _estavaConectado       = false;         // [3]
+  unsigned long  _ultimoStatusForcado   = 0;             // [2]
+  const unsigned long STATUS_RATE_LIMIT_MS = 2000UL;     // [2]
+
   void _publicar(bool forcar = false) {
-    if (!forcar && alarme.estadoAtual == _ultimoEstadoPublicado && 
+    if (!forcar && alarme.estadoAtual == _ultimoEstadoPublicado &&
         alarme.modo == _ultimoModoPublicado) {
       return;
     }
@@ -1275,7 +1425,6 @@ private:
                   (alarme.estadoAtual == EMERGENCIA_RACK ||
                    alarme.estadoAtual == INVASAO_SALA));
 
-    // --- INÍCIO DA ALTERAÇÃO ---
     String payload = "{\"estado\":\"";
     payload += alarme.nomeEstadoAtual();
     payload += "\",\"modo\":\"";
@@ -1290,8 +1439,7 @@ private:
     payload += String(ultrassonico.distancia(), 1);
     payload += ",\"ativo\":";
     payload += (ativo ? "true" : "false");
-    
-    // Novos campos para o Site:
+
     payload += ",\"ip\":\"";
     payload += WiFi.localIP().toString();
     payload += "\",\"uid\":\"";
@@ -1302,8 +1450,27 @@ private:
     payload += String(alarme.contadorInvasoes);
     payload += ",\"rearmes\":";
     payload += String(alarme.contadorRearmesBloqueados);
+
+    payload += ",\"alerta_temp\":";
+    payload += (alertaTempAtivo ? "true" : "false");
+    payload += ",\"critico_temp\":";
+    payload += (criticoTempAtivo ? "true" : "false");
+    payload += ",\"alerta_umid\":";
+    payload += (alertaUmidAtivo ? "true" : "false");
+    payload += ",\"critico_umid\":";
+    payload += (criticoUmidAtivo ? "true" : "false");
+    payload += ",\"taxa_temp_alerta\":";
+    payload += (taxaTempAlerta ? "true" : "false");
+    payload += ",\"ambiente\":\"";
+    payload += (estadoAmbiental == AMB_CRITICO ? "CRITICO" :
+                estadoAmbiental == AMB_ALERTA  ? "ALERTA"  : "OK");
+    payload += "\"";
+
+    float t = dht.temperatura();
+    float u = dht.umidade();
+    payload += ",\"temp_c\":" + String(t, 1);
+    payload += ",\"umid_pct\":" + String(u, 1);
     payload += "}";
-    // --- FIM DA ALTERAÇÃO ---
 
     Serial.print(F("[MQTT] Publicando em "));
     Serial.print(MQTT_TOPIC_STATUS);
@@ -1311,6 +1478,10 @@ private:
     Serial.println(payload);
 
     _client.publish(MQTT_TOPIC_STATUS, payload.c_str(), true);
+
+    // [1] cache atualizado AQUI (qualquer publicação, forçada ou não)
+    _ultimoEstadoPublicado = alarme.estadoAtual;
+    _ultimoModoPublicado   = alarme.modo;
   }
 
   void _tratarComando(char* topic, byte* payload, unsigned int length) {
@@ -1328,27 +1499,63 @@ private:
         alarme.uidUltimoDesarme   = "MQTT";
         alarme.aviso5minDisparado = false;
         alarme.contadorDesarmes++;
+        contadoresDirty = true;
         logSerial("INFO", "MQTT_CMD", "DESARMADO remoto executado.");
-        enviarLogSite("Comando Remoto: DESARMAR recebido");
+        enviarLogSite("Comando Remoto: DESARMAR executado.");
       } else {
         logSerial("WARN", "MQTT_CMD", "Ja desarmado, ignorando.");
-        enviarLogSite("Comando Remoto: ARMAR recebido");
+        enviarLogSite("Comando Remoto: DESARMAR (ja desarmado).");
       }
-    } else if (cmd == "ARMAR") {
+    }
+    else if (cmd == "ARMAR") {
       if (alarme.modo == DESARMADO) {
         if (alarme.armarViaSerial(porta, audio)) {
           logSerial("INFO", "MQTT_CMD", "ARMADO remoto executado.");
+          enviarLogSite("Comando Remoto: ARMAR executado.");
         } else {
           logSerial("WARN", "MQTT_CMD", "Armar remoto BLOQUEADO (porta aberta).");
+          enviarLogSite("Comando Remoto: ARMAR BLOQUEADO.");
         }
       } else {
         logSerial("WARN", "MQTT_CMD", "Ja armado, ignorando.");
+        enviarLogSite("Comando Remoto: ARMAR (ja armado).");
       }
-    } 
-    // NOVO: Responde ao pedido de STATUS do site
+    }
+    // [2] STATUS com rate limit
     else if (cmd == "STATUS") {
+      if (millis() - _ultimoStatusForcado < STATUS_RATE_LIMIT_MS) {
+        logSerial("WARN", "MQTT_CMD", "STATUS ignorado (rate limit).");
+        return;
+      }
+      _ultimoStatusForcado = millis();
       logSerial("INFO", "MQTT_CMD", "Enviando STATUS sob demanda.");
-      _publicar(true); // Força a publicação do JSON atual
+      _publicar(true);
+    }
+    // [2] RESET com token; preserva contadores de segurança
+    else if (cmd.startsWith("RESET")) {
+      String token = cmd.substring(5);
+      token.trim();
+
+      if (token != MQTT_RESET_TOKEN) {
+        logSerial("WARN", "MQTT_CMD", "RESET negado: token invalido.");
+        enviarLogSite("Comando Remoto: RESET NEGADO (token).");
+      } else {
+        alarme.contadorAberturasPorta       = 0;
+        alarme.contadorAproximacoes         = 0;
+        alarme.contadorAcessosValidos       = 0;
+        alarme.contadorMovimentosManutencao = 0;
+        alarme.contadorDesarmes             = 0;
+        // NÃO zera: contadorInvasoes, contadorRearmesBloqueados
+        alarme.resetContadoresPendente = false;
+        salvarConfig();
+        logSerial("INFO", "MQTT_CMD", "RESET remoto executado (seguranca preservada).");
+        enviarLogSite("Comando Remoto: RESET operacional executado.");
+      }
+    }
+    else if (cmd == "TESTE") {
+      alarme.modoTestePendente = true;
+      logSerial("INFO", "MQTT_CMD", "MODO TESTE remoto executado.");
+      enviarLogSite("Comando Remoto: TESTE iniciado.");
     }
     else {
       logSerial("WARN", "MQTT_CMD", "Comando desconhecido: " + cmd);
@@ -1359,6 +1566,175 @@ private:
 NotificadorMQTT notificador;
 
 // =========================================================================
+// ALARME AMBIENTAL (Temperatura + Umidade + taxa + crítico + consolidado)
+// =========================================================================
+void _verificarAmbiente(float temp, float umid) {
+  if (temp == -999.0f || umid == -999.0f) return;
+
+  // 4.1 — Taxa de subida de temperatura (amostra a cada 1 min)
+  unsigned long agora = millis();
+  if (_tempoAnteriorTaxa == 0) {
+    _tempAnteriorTaxa  = temp;
+    _tempoAnteriorTaxa = agora;
+  } else if (agora - _tempoAnteriorTaxa >= INTERVALO_AMOSTRA_TAXA_MS) {
+    float dtMin = (agora - _tempoAnteriorTaxa) / 60000.0f;
+    float taxa  = (temp - _tempAnteriorTaxa) / dtMin;
+
+    if (!taxaTempAlerta && taxa >= TAXA_ALERTA_C_POR_MIN) {
+      taxaTempAlerta = true;
+      logSerial("CRIT", "AMBIENTE",
+        "SUBIDA RAPIDA: " + String(taxa, 2) + " C/min (limiar " +
+        String(TAXA_ALERTA_C_POR_MIN, 2) + " C/min)");
+      enviarLogSite("CRITICO: Temperatura subindo " + String(taxa, 2) + " C/min!");
+    }
+    else if (taxaTempAlerta && taxa < (TAXA_ALERTA_C_POR_MIN * 0.5f)) {
+      taxaTempAlerta = false;
+      logSerial("INFO", "AMBIENTE",
+        "Taxa de subida normalizada: " + String(taxa, 2) + " C/min");
+    }
+
+    _tempAnteriorTaxa  = temp;
+    _tempoAnteriorTaxa = agora;
+  }
+
+  // Temperatura — ALERTA
+  if (!alertaTempAtivo && temp >= limiarTempAlerta) {
+    alertaTempAtivo = true;
+    logSerial("WARN", "AMBIENTE",
+      "Temperatura alta: " + String(temp, 1) + "C (limiar " +
+      String(limiarTempAlerta, 1) + "C)");
+    enviarLogSite("ALERTA: Temperatura do rack em " + String(temp, 1) + "C");
+  }
+  else if (alertaTempAtivo && temp <= (limiarTempAlerta - TEMP_HISTERESE)) {
+    alertaTempAtivo = false;
+    logSerial("INFO", "AMBIENTE",
+      "Temperatura normalizada: " + String(temp, 1) + "C");
+    enviarLogSite("Temperatura do rack normalizada.");
+  }
+
+  // Temperatura — CRÍTICO
+  if (!criticoTempAtivo && temp >= limiarTempCritico) {
+    criticoTempAtivo = true;
+    logSerial("CRIT", "AMBIENTE",
+      "TEMPERATURA CRITICA: " + String(temp, 1) + "C!");
+    enviarLogSite("CRITICO: Temperatura do rack em " + String(temp, 1) + "C!");
+  }
+  else if (criticoTempAtivo && temp <= (limiarTempCritico - TEMP_HISTERESE)) {
+    criticoTempAtivo = false;
+    logSerial("INFO", "AMBIENTE",
+      "Temperatura critica normalizada: " + String(temp, 1) + "C");
+    enviarLogSite("Temperatura critica normalizada.");
+  }
+
+  // Umidade — ALERTA
+  if (!alertaUmidAtivo && umid >= limiarUmidAlerta) {
+    alertaUmidAtivo = true;
+    logSerial("WARN", "AMBIENTE",
+      "Umidade alta: " + String(umid, 1) + "% (limiar " +
+      String(limiarUmidAlerta, 1) + "%)");
+    enviarLogSite("ALERTA: Umidade do rack em " + String(umid, 1) + "%");
+  }
+  else if (alertaUmidAtivo && umid <= (limiarUmidAlerta - UMID_HISTERESE)) {
+    alertaUmidAtivo = false;
+    logSerial("INFO", "AMBIENTE",
+      "Umidade normalizada: " + String(umid, 1) + "%");
+    enviarLogSite("Umidade do rack normalizada.");
+  }
+
+  // 4.5 — Umidade — CRÍTICO (condensação)
+  if (!criticoUmidAtivo && umid >= limiarUmidCritico) {
+    criticoUmidAtivo = true;
+    logSerial("CRIT", "AMBIENTE",
+      "UMIDADE CRITICA: " + String(umid, 1) + "% (risco de condensacao)");
+    enviarLogSite("CRITICO: Umidade do rack em " + String(umid, 1) + "%!");
+  }
+  else if (criticoUmidAtivo && umid <= (limiarUmidCritico - UMID_HISTERESE)) {
+    criticoUmidAtivo = false;
+    logSerial("INFO", "AMBIENTE",
+      "Umidade critica normalizada: " + String(umid, 1) + "%");
+    enviarLogSite("Umidade critica normalizada.");
+  }
+
+  // 4.2 — Estado ambiental consolidado
+  EstadoAmbiental novoEstado;
+  if (criticoTempAtivo || criticoUmidAtivo || taxaTempAlerta) {
+    novoEstado = AMB_CRITICO;
+  } else if (alertaTempAtivo || alertaUmidAtivo) {
+    novoEstado = AMB_ALERTA;
+  } else {
+    novoEstado = AMB_OK;
+  }
+
+  if (novoEstado != estadoAmbiental) {
+    const char* nomes[] = { "OK", "ALERTA", "CRITICO" };
+    logSerial(novoEstado == AMB_OK ? "INFO" :
+              novoEstado == AMB_ALERTA ? "WARN" : "CRIT",
+              "AMBIENTE",
+              String("Estado ambiental: ") + nomes[estadoAmbiental] +
+              " -> " + nomes[novoEstado]);
+    estadoAmbiental = novoEstado;
+  }
+
+  // 4.3 — Buzzer ambiental opcional (prioridade respeitada)
+#if ALARME_SONORO_AMBIENTAL
+  bool segurancaCritica = (alarme.estadoAtual == EMERGENCIA_RACK ||
+                           alarme.estadoAtual == INVASAO_SALA);
+  if (!segurancaCritica) {
+    static unsigned long _ultimoBipAmbiental = 0;
+    unsigned long agoraBip = millis();
+
+    if (estadoAmbiental == AMB_CRITICO && agoraBip - _ultimoBipAmbiental >= 3000) {
+      tone(Pins::BUZZER_D, 400, 200); delay(220);
+      tone(Pins::BUZZER_D, 400, 200);
+      _ultimoBipAmbiental = agoraBip;
+    }
+    else if (estadoAmbiental == AMB_ALERTA && agoraBip - _ultimoBipAmbiental >= 8000) {
+      tone(Pins::BUZZER_E, 700, 150);
+      _ultimoBipAmbiental = agoraBip;
+    }
+  }
+#endif
+}
+
+// =========================================================================
+// HELPER JSON [6]
+// =========================================================================
+String jsonEscape(const String &in) {
+  String out;
+  out.reserve(in.length() + 8);
+  for (size_t i = 0; i < in.length(); i++) {
+    char c = in[i];
+    switch (c) {
+      case '"':  out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n";  break;
+      case '\r': out += "\\r";  break;
+      case '\t': out += "\\t";  break;
+      default:
+        if ((uint8_t)c < 0x20) {
+          char buf[7];
+          snprintf(buf, sizeof(buf), "\\u%04x", (uint8_t)c);
+          out += buf;
+        } else {
+          out += c;
+        }
+    }
+  }
+  return out;
+}
+
+// =========================================================================
+// ENVIO DE LOG PARA O SITE
+// =========================================================================
+void enviarLogSite(const String &mensagem) {
+  if (notificador.estaConectado()) {
+    String payload = "{\"ts\":\"" + relogio.timestamp() +
+                     "\",\"msg\":\"" + jsonEscape(mensagem) + "\"}";
+    notificador.publicarLog(payload);
+  }
+}
+
+// =========================================================================
 // COMANDOS SERIAL
 // =========================================================================
 String bufferSerial = "";
@@ -1367,10 +1743,6 @@ void processarComandoSerial(String cmd) {
   cmd.trim();
   cmd.toUpperCase();
   logSerial("INFO", "CMD", "Comando recebido: " + cmd);
-
-  // [LEMBRETE] Ao adicionar comando, atualizar:
-  //   - bloco HELP (texto do Serial)
-  //   - seção "PONTOS DE EXTENSÃO" do cabeçalho
 
   if (cmd.startsWith("SET LIMIAR ")) {
     float novo = cmd.substring(11).toFloat();
@@ -1396,6 +1768,38 @@ void processarComandoSerial(String cmd) {
       logSerial("WARN", "CMD", "Timeout fora da faixa (0-1440 min).");
     }
   }
+  else if (cmd.startsWith("SET TEMP_ALERTA ")) {
+    float v = cmd.substring(16).toFloat();
+    if (v >= 15 && v <= 50) {
+      limiarTempAlerta = v;
+      salvarConfig();
+      logSerial("INFO", "CMD", "Limiar temp alerta: " + String(v, 1) + "C");
+    } else logSerial("WARN", "CMD", "Fora da faixa (15-50).");
+  }
+  else if (cmd.startsWith("SET TEMP_CRIT ")) {
+    float v = cmd.substring(14).toFloat();
+    if (v >= 20 && v <= 60) {
+      limiarTempCritico = v;
+      salvarConfig();
+      logSerial("INFO", "CMD", "Limiar temp critico: " + String(v, 1) + "C");
+    } else logSerial("WARN", "CMD", "Fora da faixa (20-60).");
+  }
+  else if (cmd.startsWith("SET UMID_ALERTA ")) {
+    float v = cmd.substring(16).toFloat();
+    if (v >= 30 && v <= 90) {
+      limiarUmidAlerta = v;
+      salvarConfig();
+      logSerial("INFO", "CMD", "Limiar umid alerta: " + String(v, 1) + "%");
+    } else logSerial("WARN", "CMD", "Fora da faixa (30-90).");
+  }
+  else if (cmd.startsWith("SET UMID_CRIT ")) {
+    float v = cmd.substring(14).toFloat();
+    if (v >= 40 && v <= 100) {
+      limiarUmidCritico = v;
+      salvarConfig();
+      logSerial("INFO", "CMD", "Limiar umid critico: " + String(v, 1) + "%");
+    } else logSerial("WARN", "CMD", "Fora da faixa (40-100).");
+  }
   else if (cmd == "STATUS") {
     Serial.println(F("----------- STATUS ATUAL -----------"));
     Serial.print(F("  Modo Vigilante:       ")); Serial.println(alarme.nomeModo());
@@ -1420,8 +1824,15 @@ void processarComandoSerial(String cmd) {
     Serial.print(F("  Invasoes:             ")); Serial.println(alarme.contadorInvasoes);
     Serial.print(F("  Aproximacoes:         ")); Serial.println(alarme.contadorAproximacoes);
     Serial.print(F("  Mov. em manutencao:   ")); Serial.println(alarme.contadorMovimentosManutencao);
+    Serial.print(F("  Limiares ambientais:  T["));
+    Serial.print(limiarTempAlerta, 1);   Serial.print(F("/"));
+    Serial.print(limiarTempCritico, 1);  Serial.print(F("C] U["));
+    Serial.print(limiarUmidAlerta, 1);   Serial.print(F("/"));
+    Serial.print(limiarUmidCritico, 1);  Serial.println(F("%]"));
     Serial.print(F("  WiFi:                 "));
     Serial.println(WiFi.status() == WL_CONNECTED ? "conectado" : "desconectado");
+    Serial.print(F("  MQTT:                 "));
+    Serial.println(notificador.estaConectado() ? "conectado" : "desconectado");
     Serial.println(F("-------------------------------------"));
   }
   else if (cmd == "ARMAR") {
@@ -1440,6 +1851,7 @@ void processarComandoSerial(String cmd) {
       alarme.uidUltimoDesarme   = "SERIAL";
       alarme.aviso5minDisparado = false;
       alarme.contadorDesarmes++;
+      contadoresDirty = true;
       logSerial("INFO", "CMD", "Modo Vigilante DESARMADO via Serial.");
       salvarConfig();
     } else {
@@ -1451,15 +1863,15 @@ void processarComandoSerial(String cmd) {
     alarme.modoTestePendente = true;
   }
   else if (cmd == "RESET") {
+    // [2] preserva contadores de segurança
     alarme.contadorAberturasPorta       = 0;
-    alarme.contadorInvasoes             = 0;
     alarme.contadorAproximacoes         = 0;
     alarme.contadorAcessosValidos       = 0;
     alarme.contadorMovimentosManutencao = 0;
     alarme.contadorDesarmes             = 0;
-    alarme.contadorRearmesBloqueados    = 0;
+    // NÃO zera: contadorInvasoes, contadorRearmesBloqueados
     salvarConfig();
-    logSerial("INFO", "CMD", "Contadores zerados e persistidos.");
+    logSerial("INFO", "CMD", "Contadores operacionais zerados (seguranca preservada).");
   }
   else if (cmd.startsWith("RTC ")) {
     int ano, mes, dia, hora, min, seg;
@@ -1476,21 +1888,61 @@ void processarComandoSerial(String cmd) {
   else if (cmd == "RTC") {
     logSerial("INFO", "RTC", "Hora atual: " + relogio.timestamp());
   }
+  // [9] ADD_CARD com deduplicação
+  else if (cmd.startsWith("ADD_CARD ")) {
+    String novoUID = cmd.substring(9);
+    novoUID.trim();
+    if (novoUID.length() >= 8) {
+      bool jaExiste = false;
+      for (const String &c : cartoesAutorizados) {
+        if (c == novoUID) { jaExiste = true; break; }
+      }
+      if (jaExiste) {
+        logSerial("WARN", "CMD", "Cartao ja cadastrado: " + novoUID);
+      } else {
+        prefs.begin("rack", false);
+        int total = prefs.getInt("total_cards", 0);
+        String chave = "card_" + String(total);
+        prefs.putString(chave.c_str(), novoUID);
+        prefs.putInt("total_cards", total + 1);
+        prefs.end();
+        cartoesAutorizados.push_back(novoUID);
+        logSerial("INFO", "CMD", "Cartao cadastrado na NVS: " + novoUID);
+      }
+    } else {
+      logSerial("WARN", "CMD", "UID invalido. Use ADD_CARD <UID_HEX> (min 8 chars)");
+    }
+  }
+  else if (cmd == "LIST_CARDS") {
+    Serial.println(F("--- Cartoes Autorizados ---"));
+    for (const String &card : cartoesAutorizados) {
+      Serial.println(card);
+    }
+    Serial.println(F("---------------------------"));
+  }
   else if (cmd == "HELP") {
     Serial.println(F("----------- COMANDOS DISPONIVEIS -----------"));
     Serial.println(F("  SET LIMIAR <5-400>      - Ajusta limiar ultrassonico (persiste)"));
     Serial.println(F("  SET TIMEOUT <0-1440>    - Timeout de desarme (min, persiste)"));
+    Serial.println(F("  SET TEMP_ALERTA <15-50> - Limiar temp alerta (C, persiste)"));
+    Serial.println(F("  SET TEMP_CRIT <20-60>   - Limiar temp critico (C, persiste)"));
+    Serial.println(F("  SET UMID_ALERTA <30-90> - Limiar umid alerta (%, persiste)"));
+    Serial.println(F("  SET UMID_CRIT <40-100>  - Limiar umid critico (%, persiste)"));
     Serial.println(F("  STATUS                  - Status completo"));
     Serial.println(F("  ARMAR                   - Forca ARMADO (se porta fechada)"));
     Serial.println(F("  DESARMAR                - Forca DESARMADO"));
     Serial.println(F("  TESTE                   - Modo teste"));
     Serial.println(F("  RTC                     - Mostra hora do RTC"));
     Serial.println(F("  RTC YYYY-MM-DD HH:MM:SS - Ajusta RTC"));
-    Serial.println(F("  RESET                   - Zera contadores (persiste)"));
+    Serial.println(F("  RESET                   - Zera contadores operacionais (preserva seguranca)"));
+    Serial.println(F("  ADD_CARD <UID>          - Cadastra novo cartao na NVS"));
+    Serial.println(F("  LIST_CARDS              - Lista cartoes autorizados"));
     Serial.println(F("  HELP                    - Lista comandos"));
     Serial.println(F("---------------------------------------------"));
     Serial.println(F("  BOTAO : curto=reset | longo=rearme | duplo=teste"));
-    Serial.println(F("  MQTT  : rack/status (pub) | rack/comando (sub: ARMAR/DESARMAR)"));
+    Serial.println(F("  MQTT  : rack/status (pub) | rack/comando (sub)"));
+    Serial.println(F("  MQTT  : rack/status/lwt (online/offline) | rack/logs (eventos)"));
+    Serial.println(F("  MQTT  : comandos = ARMAR | DESARMAR | STATUS | RESET <token> | TESTE"));
   }
   else {
     logSerial("WARN", "CMD", "Comando desconhecido. Digite HELP.");
@@ -1501,46 +1953,108 @@ void processarComandoSerial(String cmd) {
 // MODO TESTE
 // =========================================================================
 void executarModoTeste() {
-  logSerial("INFO", "TESTE", "Iniciando modo teste...");
+  logSerial("INFO", "TESTE", "=== INICIANDO AUTODIAGNOSTICO v2 ===");
+  enviarLogSite("TESTE: iniciando autodiagnostico...");
+
+  int ok = 0, falhas = 0;
+  String resumoFalhas = "";
+
+  // 1. OLED
+  if (display.begin(SSD1306_SWITCHCAPVCC, ENDERECO_OLED)) {
+    logSerial("INFO", "TESTE", "[OK] Display OLED (I2C) respondendo.");
+    ok++;
+  } else {
+    logSerial("CRIT", "TESTE", "[FALHA] Display OLED NAO responde.");
+    resumoFalhas += "OLED "; falhas++;
+  }
+
   display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
   display.setCursor(20, 20); display.println("MODO TESTE");
   display.setCursor(10, 40); display.println("Aguarde...");
   display.display();
 
+  // 2. RFID
+  byte versao = rfid.PCD_ReadRegister(MFRC522::VersionReg);
+  if (versao != 0x00 && versao != 0xFF) {
+    logSerial("INFO", "TESTE", "[OK] RFID MFRC522 (v0x" + String(versao, HEX) + ").");
+    ok++;
+  } else {
+    logSerial("CRIT", "TESTE", "[FALHA] RFID MFRC522 NAO responde.");
+    resumoFalhas += "RFID "; falhas++;
+  }
+
+  // 3. Ultrassonico
+  float d = ultrassonico.distancia();
+  if (d > 0.0f && d < US_DIST_MAX_VALIDA) {
+    logSerial("INFO", "TESTE", "[OK] Ultrassonico: " + String(d, 1) + " cm.");
+    ok++;
+  } else {
+    logSerial("CRIT", "TESTE", "[FALHA] Ultrassonico: " + String(d, 1) + " cm.");
+    resumoFalhas += "US "; falhas++;
+  }
+
+  // 4. LDR
+  int ldrRaw = ldr.leituraBruta();
+  logSerial("INFO", "TESTE", "[OK] LDR: " + String(ldrRaw) + " (" + String(ldr.estaAcesa() ? "ACESA" : "APAGADA") + ").");
+  ok++;
+
+  // 5. Porta
+  logSerial("INFO", "TESTE", "[INFO] Porta: " + String(porta.estaAberta() ? "ABERTA" : "fechada") + ".");
+  ok++;
+
+  // 6. PIR
+  logSerial("INFO", "TESTE", "[INFO] PIR: " + String(pir.detectaMovimento() ? "ATIVO" : "inativo") + ".");
+  ok++;
+
+  // 7. DHT22
+  float t = dht.temperatura();
+  float u = dht.umidade();
+  if (t > -50.0f && t < 80.0f) {
+    logSerial("INFO", "TESTE", "[OK] DHT22: " + String(t, 1) + "C / " + String(u, 1) + "%.");
+    ok++;
+  } else {
+    logSerial("CRIT", "TESTE", "[FALHA] DHT22 sem leitura valida.");
+    resumoFalhas += "DHT22 "; falhas++;
+  }
+
+  // 8. Buzzers
+  logSerial("INFO", "TESTE", "[INFO] Testando buzzers...");
+  tone(Pins::BUZZER_E, 500, 150);  delay(200);
+  tone(Pins::BUZZER_E, 1000, 150); delay(200);
+  tone(Pins::BUZZER_E, 2000, 150); delay(200);
+  tone(Pins::BUZZER_D, 800, 300);  delay(350);
+  ok++;
+
+  // 9. LED
+  logSerial("INFO", "TESTE", "[INFO] Testando LED RGB...");
   led.definirCor(255, 0, 0);     delay(300);
   led.definirCor(0, 255, 0);     delay(300);
   led.definirCor(0, 0, 255);     delay(300);
   led.definirCor(255, 255, 255); delay(300);
   led.definirCor(0, 0, 0);
+  ok++;
 
-  tone(Pins::BUZZER_E, 500, 150);  delay(200);
-  tone(Pins::BUZZER_E, 1000, 150); delay(200);
-  tone(Pins::BUZZER_E, 2000, 150); delay(200);
-  tone(Pins::BUZZER_D, 800, 300);  delay(350);
+  // Resumo
+  String resumo = "TESTE CONCLUIDO: " + String(ok) + " OK";
+  if (falhas > 0) resumo += ", " + String(falhas) + " FALHA(S): " + resumoFalhas;
+  logSerial(falhas > 0 ? "WARN" : "INFO", "TESTE", resumo);
+  enviarLogSite(resumo);
 
-  logSerial("TESTE", "SENSOR", String("PIR: ") + (pir.detectaMovimento() ? "ATIVO" : "inativo"));
-  logSerial("TESTE", "SENSOR",
-    "LDR: " + String(ldr.leituraBruta()) +
-    " (" + String(ldr.estaAcesa() ? "ACESA" : "APAGADA") + ")");
-  logSerial("TESTE", "SENSOR", "Porta: " + String(porta.estaAberta() ? "ABERTA" : "fechada"));
-  logSerial("TESTE", "SENSOR", "Distancia: " + String(ultrassonico.distancia(), 1) + " cm");
+  display.clearDisplay();
+  display.setTextSize(1); display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);  display.println("TESTE CONCLUIDO");
+  display.drawLine(0, 12, 128, 12, SSD1306_WHITE);
+  display.setCursor(0, 20); display.print("OK:     "); display.println(ok);
+  display.setCursor(0, 32); display.print("FALHAS: "); display.println(falhas);
+  display.display();
 
-  logSerial("INFO", "TESTE", "Modo teste concluido.");
-  tone(Pins::BUZZER_E, 1500, 100); delay(120);
-  tone(Pins::BUZZER_E, 2000, 150);
-}
-
-// =========================================================================
-// FUNÇÃO AUXILIAR: ENVIAR LOG PARA O SITE (MQTT)
-// =========================================================================
-void enviarLogSite(const String &mensagem) {
-  // Publica no tópico de logs. Não usa retain para não encher o broker de históricos velhos
-  if (notificador.estaConectado()) { // Precisamos de um método auxiliar para verificar a conexão
-    String timestamp = relogio.timestamp();
-    String payload = "{\"ts\":\"" + timestamp + "\",\"msg\":\"" + mensagem + "\"}";
-    notificador.publicarLog(payload);
+  if (falhas == 0) {
+    tone(Pins::BUZZER_E, 1500, 100); delay(120);
+    tone(Pins::BUZZER_E, 2000, 150);
+  } else {
+    tone(Pins::BUZZER_D, 400, 500); delay(600);
+    tone(Pins::BUZZER_D, 300, 500);
   }
 }
 
@@ -1551,32 +2065,30 @@ void setup() {
   Serial.begin(115200);
   delay(200);
 
-  // Atuadores primeiro
   led.begin();
   led.selfTest();
 
-  // I2C
   Wire.begin(21, 22);
   relogio.begin();
   oled.begin();
 
-  // Sensores
   ldr.begin();
   ultrassonico.begin();
   porta.begin();
   pir.begin();
   botao.begin();
 
-  // RFID + Áudio
   leitorRFID.begin();
   audio.begin();
 
-  // NVS — carrega config ANTES do MQTT começar
+  dht.begin();
+
   carregarConfig();
+  carregarCartoes();
 
   Serial.println();
   Serial.println(F("================================================="));
-  Serial.println(F("  SISTEMA DE MONITORAMENTO DE RACK - v6.3"));
+  Serial.println(F("  SISTEMA DE MONITORAMENTO DE RACK - v6.4"));
   Serial.println(F("  LWT + Retain + NVS + Comandos Remotos MQTT"));
   Serial.println(F("================================================="));
   logSerial("INFO", "SISTEMA", "Sistema inicializado. MODO VIGILANTE: ARMADO.");
@@ -1595,7 +2107,6 @@ void setup() {
   logSerial("INFO", "SISTEMA", "Digite HELP no Serial para comandos disponiveis.");
   Serial.println(F("-------------------------------------------------"));
 
-  // Rede + MQTT (com LWT + subscribe)
   notificador.begin();
 }
 
@@ -1606,7 +2117,7 @@ unsigned long tempoUltimoBip   = 0;
 unsigned long tempoUltimoPisca = 0;
 bool          estadoPiscaLED   = false;
 
-// Salva contadores na NVS a cada 60s (evita desgaste da flash)
+// [4] salvamento só se dirty
 unsigned long tempoUltimoSalvamento = 0;
 constexpr unsigned long INTERVALO_SALVAMENTO_MS = 60000UL;
 
@@ -1628,6 +2139,7 @@ void loop() {
   ldr.update();
   ultrassonico.update();
   porta.update();
+  pir.update();
 
   // 3. Eventos
   EventoBotao evBotao = botao.update();
@@ -1643,18 +2155,25 @@ void loop() {
   // 5. Máquina de estados
   alarme.update(s, evRFID, evBotao, porta, audio);
 
+  // 5.1. Alarme ambiental
+  float tempAtual = dht.temperatura();
+  float umidAtual = dht.umidade();
+  _verificarAmbiente(tempAtual, umidAtual);
+
   // 6. Ações pendentes
   if (alarme.audioPararPendente) {
     alarme.audioPararPendente = false;
     audio.parar();
   }
   if (alarme.resetContadoresPendente) {
+    // [2] preserva contadores de segurança
     alarme.resetContadoresPendente = false;
     alarme.contadorAberturasPorta       = 0;
-    alarme.contadorInvasoes             = 0;
     alarme.contadorAproximacoes         = 0;
     alarme.contadorAcessosValidos       = 0;
     alarme.contadorMovimentosManutencao = 0;
+    alarme.contadorDesarmes             = 0;
+    // NÃO zera: contadorInvasoes, contadorRearmesBloqueados
     salvarConfig();
   }
   if (alarme.modoTestePendente) {
@@ -1689,9 +2208,10 @@ void loop() {
   // 9. MQTT
   notificador.update();
 
-  // 10. Salvamento periódico de contadores na NVS (a cada 60s)
-  if (millis() - tempoUltimoSalvamento > INTERVALO_SALVAMENTO_MS) {
+  // 10. [4] Salvamento periódico apenas se dirty
+  if (contadoresDirty && millis() - tempoUltimoSalvamento > INTERVALO_SALVAMENTO_MS) {
     tempoUltimoSalvamento = millis();
+    contadoresDirty = false;
     salvarConfig();
   }
 

@@ -5,9 +5,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Rack Monitor</title>
-    <!-- Biblioteca MQTT.js -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-    <!-- Fonte Inter para visual moderno -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <style>
@@ -16,19 +15,11 @@
             --card-bg: #1e222b;
             --text-main: #e2e8f0;
             --text-muted: #94a3b8;
-
-            /* Paleta Semântica */
             --color-success: #10b981;
-            /* Verde */
             --color-info: #3b82f6;
-            /* Azul */
             --color-warning: #f59e0b;
-            /* Amarelo */
             --color-danger: #ef4444;
-            /* Vermelho */
             --color-neutral: #e2e8f0;
-            /* Branco/Cinza */
-
             --border-color: #334155;
         }
 
@@ -59,6 +50,8 @@
             justify-content: space-between;
             align-items: center;
             margin-bottom: 2rem;
+            flex-wrap: wrap;
+            gap: 1rem;
         }
 
         .logo-area {
@@ -130,17 +123,18 @@
             margin-bottom: 0.5rem;
         }
 
-        /* Classe base do valor com correção de UX */
         .card-value {
             font-size: 1.25rem;
             font-weight: 600;
             color: var(--color-neutral);
             word-break: break-word;
             overflow-wrap: break-word;
-            font-size: clamp(1rem, 2vw, 1.25rem);
         }
 
-        /* Classes utilitárias de cor */
+        .card-value.large {
+            font-size: 1.5rem;
+        }
+
         .text-success {
             color: var(--color-success);
         }
@@ -161,7 +155,6 @@
             color: var(--color-neutral);
         }
 
-        /* Classes de borda (para destacar o card inteiro) */
         .card-border-success {
             border-color: var(--color-success);
             box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
@@ -175,11 +168,6 @@
         .card-border-warning {
             border-color: var(--color-warning);
             box-shadow: 0 0 15px rgba(245, 158, 11, 0.2);
-        }
-
-        .card-border-info {
-            border-color: var(--color-info);
-            box-shadow: 0 0 15px rgba(59, 130, 246, 0.2);
         }
 
         .controls {
@@ -203,12 +191,17 @@
             color: white;
         }
 
-        button:hover {
+        button:hover:not(:disabled) {
             opacity: 0.9;
         }
 
-        button:active {
+        button:active:not(:disabled) {
             transform: scale(0.98);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
         }
 
         .btn-armar {
@@ -225,6 +218,10 @@
 
         .btn-reset {
             background-color: #475569;
+        }
+
+        .btn-refresh {
+            background-color: #0e7490;
         }
 
         .section-title {
@@ -263,6 +260,15 @@
             border-bottom: none;
         }
 
+        .chart-container {
+            background-color: #0f111a;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 2rem;
+            height: 300px;
+        }
+
         footer {
             text-align: center;
             font-size: 0.75rem;
@@ -270,6 +276,38 @@
             margin-top: 2rem;
             padding-top: 2rem;
             border-top: 1px solid var(--border-color);
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 1rem;
+            }
+
+            h1 {
+                font-size: 1.25rem;
+            }
+
+            .grid-cards {
+                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            }
+
+            .card {
+                padding: 1rem;
+            }
+
+            .card-value {
+                font-size: 1.1rem;
+            }
+
+            .controls button {
+                flex: 1 1 100%;
+                justify-content: center;
+            }
+
+            .chart-container {
+                height: 220px;
+                padding: 1rem;
+            }
         }
     </style>
 </head>
@@ -283,23 +321,28 @@
                 <h1>Rack Monitor</h1>
             </div>
             <div class="status-indicator">
-                <div id="connection-dot" class="dot"></div>
-                <span id="connection-text">Offline</span>
+                <span title="Conexão com o broker MQTT">
+                    🌐 <span id="connection-text">Offline</span>
+                    <span id="connection-dot" class="dot"></span>
+                </span>
+                <span style="margin: 0 12px; color: var(--border-color);">|</span>
+                <span title="Sinal de vida do ESP32">
+                    💓 ESP32: <span id="heartbeat-status" style="color: var(--text-muted);">--</span>
+                </span>
             </div>
         </header>
 
-        <!-- Primeira linha de cards -->
         <div class="grid-cards">
             <div class="card">
-                <span class="card-label">Modo Vigilante</span>
+                <span class="card-label">Modo de Operação</span>
                 <span id="modo" class="card-value">--</span>
             </div>
             <div class="card">
-                <span class="card-label">Estado Alarme</span>
+                <span class="card-label">Status do Perímetro</span>
                 <span id="estado" class="card-value">--</span>
             </div>
             <div class="card">
-                <span class="card-label">Porta</span>
+                <span class="card-label">Acesso Físico</span>
                 <span id="porta" class="card-value">--</span>
             </div>
             <div class="card">
@@ -312,7 +355,6 @@
             </div>
         </div>
 
-        <!-- Segunda linha de cards (Contadores) -->
         <div class="grid-cards">
             <div class="card">
                 <span class="card-label">Acessos RFID</span>
@@ -326,93 +368,336 @@
                 <span class="card-label">Rearmes Bloqueados</span>
                 <span id="bloqueios" class="card-value large">0</span>
             </div>
+            <div class="card">
+                <span class="card-label">Temperatura</span>
+                <span id="temperatura" class="card-value large">--</span>
+            </div>
+            <div class="card">
+                <span class="card-label">Umidade</span>
+                <span id="umidade" class="card-value large">--</span>
+            </div>
         </div>
 
-        <!-- Botões de Controle -->
         <div class="controls">
-            <button class="btn-armar" onclick="enviarComando('ARMAR')">🔒 Armar</button>
-            <button class="btn-desarmar" onclick="enviarComando('DESARMAR')">🔓 Desarmar</button>
-            <button class="btn-teste" onclick="enviarComando('TESTE')">🔧 Modo Teste</button>
-            <button class="btn-reset" onclick="enviarComando('RESET')">🔄 Reset</button>
+            <button id="btn-armar" class="btn-armar" onclick="enviarComando('ARMAR')">🔒 Armar</button>
+            <button id="btn-desarmar" class="btn-desarmar" onclick="enviarComando('DESARMAR')">🔓 Desarmar</button>
+            <button id="btn-teste" class="btn-teste" onclick="enviarComando('TESTE')">🔧 Modo Teste</button>
+            <button class="btn-reset" onclick="enviarReset()">🔄 Reset</button>
+            <button class="btn-refresh" onclick="forcarAtualizacao()" disabled>📡 Atualizar agora</button>
         </div>
 
-        <!-- Área de Últimos Eventos -->
+        <div class="section-title">Histórico de Distância e Temperatura (últimos 5 min)</div>
+        <div class="chart-container">
+            <canvas id="graficoDistancia"></canvas>
+        </div>
+
         <div class="section-title">Últimos eventos</div>
         <div class="box-container" id="log-eventos">
             <span class="placeholder-text">Aguardando eventos...</span>
         </div>
 
-        <!-- Área de Histórico -->
         <div class="section-title">Histórico de status</div>
         <div class="box-container" id="log-historico">
             <span class="placeholder-text">Aguardando dados do ESP32...</span>
         </div>
 
-        <footer>
-            Rack Monitor v2.0 · Docker · ---
-        </footer>
+        <footer>Rack Monitor v3.1 · Wokwi + MQTTX · broker público (sem autenticação)</footer>
     </div>
 
     <script>
+        // ============================================================
+        // CONFIGURAÇÃO — TROQUE O PREFIXO POR UM VALOR ÚNICO SEU!
+        // ============================================================
+        const TOPIC_PREFIX = 'rack_monitor_ABCD1234';   // ⚠️ mude isso
+        const topicStatus = TOPIC_PREFIX + '/status';
+        const topicLWT = TOPIC_PREFIX + '/status/lwt';
+        const topicComando = TOPIC_PREFIX + '/comando';
+        const topicLogs = TOPIC_PREFIX + '/logs';
+        const topicHeartbeat = TOPIC_PREFIX + '/heartbeat';
+
         const brokerUrl = 'wss://broker.emqx.io:8084/mqtt';
-        const topicStatus = 'rack/status';
-        const topicComando = 'rack/comando';
-        const topicLogs = 'rack/logs';
 
         let client;
-        let intervaloPolling;
-        let aguardandoResposta = false;
+        let aguardandoConfirmacao = false;
+        let comandoEnviado = null;
+        let notificacaoJaDisparada = false;
+        let heartbeatTimer = null;
 
+        // Gráfico
+        let grafico = null;
+        const MAX_PONTOS = 60;
+        const STORAGE_KEY = 'rackMonitorHistorico';
+
+        // ============================================================
+        // NOTIFICAÇÃO NO NAVEGADOR
+        // ============================================================
+        function pedirPermissaoNotificacao() {
+            if (!("Notification" in window)) return;
+            if (Notification.permission === "default") {
+                Notification.requestPermission();
+            }
+        }
+
+        function notificar(titulo, corpo) {
+            if (!("Notification" in window)) return;
+            if (Notification.permission !== "granted") return;
+            new Notification(titulo, {
+                body: corpo,
+                icon: "https://cdn-icons-png.flaticon.com/512/564/564619.png"
+            });
+        }
+
+        // ============================================================
+        // PERSISTÊNCIA DO HISTÓRICO (localStorage)
+        // ============================================================
+        function carregarHistorico() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (!raw) return { tempo: [], dist: [], temp: [] };
+                const obj = JSON.parse(raw);
+                return {
+                    tempo: obj.tempo || [],
+                    dist: obj.dist || [],
+                    temp: obj.temp || []
+                };
+            } catch (e) {
+                return { tempo: [], dist: [], temp: [] };
+            }
+        }
+
+        function salvarHistorico(tempo, dist, temp) {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify({
+                    tempo: tempo.slice(-MAX_PONTOS),
+                    dist: dist.slice(-MAX_PONTOS),
+                    temp: temp.slice(-MAX_PONTOS)
+                }));
+            } catch (e) { }
+        }
+
+        // ============================================================
+        // GRÁFICO
+        // ============================================================
+        function inicializarGrafico() {
+            const hist = carregarHistorico();
+            const ctx = document.getElementById('graficoDistancia').getContext('2d');
+
+            grafico = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: hist.tempo,
+                    datasets: [
+                        {
+                            label: 'Distância (cm)',
+                            data: hist.dist,
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            pointRadius: 2,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Temperatura (°C)',
+                            data: hist.temp,
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            borderWidth: 2,
+                            tension: 0.3,
+                            pointRadius: 2,
+                            fill: false,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    animation: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            suggestedMax: 250,
+                            grid: { color: '#334155' },
+                            ticks: { color: '#94a3b8' },
+                            title: { display: true, text: 'Distância (cm)', color: '#94a3b8' }
+                        },
+                        y1: {
+                            position: 'right',
+                            beginAtZero: false,
+                            suggestedMin: 10,
+                            suggestedMax: 50,
+                            grid: { drawOnChartArea: false },
+                            ticks: { color: '#94a3b8' },
+                            title: { display: true, text: 'Temperatura (°C)', color: '#94a3b8' }
+                        },
+                        x: {
+                            grid: { color: '#334155' },
+                            ticks: { color: '#94a3b8', maxTicksLimit: 6 }
+                        }
+                    },
+                    plugins: { legend: { labels: { color: '#e2e8f0' } } }
+                }
+            });
+        }
+
+        function atualizarGrafico(distancia, temperatura) {
+            if (!grafico) return;
+
+            // Ignora leituras inválidas
+            if (distancia === null || distancia === undefined ||
+                temperatura === null || temperatura === undefined) return;
+            if (temperatura === -999) temperatura = null;
+
+            const agora = new Date().toLocaleTimeString('pt-BR');
+            const labels = grafico.data.labels;
+            const d1 = grafico.data.datasets[0].data;
+            const d2 = grafico.data.datasets[1].data;
+
+            labels.push(agora);
+            d1.push(distancia);
+            d2.push(temperatura);
+
+            if (labels.length > MAX_PONTOS) {
+                labels.shift();
+                d1.shift();
+                d2.shift();
+            }
+
+            grafico.update('none');
+            salvarHistorico(labels, d1, d2);
+        }
+
+        // ============================================================
+        // CONEXÃO MQTT
+        // ============================================================
         function conectar() {
+            pedirPermissaoNotificacao();
+            inicializarGrafico();
+
             const clientId = 'WebDash-' + Math.random().toString(16).substr(2, 8);
-            client = mqtt.connect(brokerUrl, { clientId: clientId });
+            client = mqtt.connect(brokerUrl, {
+                clientId: clientId,
+                reconnectPeriod: 5000,
+                connectTimeout: 10000,
+                clean: true
+            });
 
             client.on('connect', () => {
+                console.log('[MQTT] Conectado ao broker');
                 document.getElementById('connection-dot').classList.add('online');
                 document.getElementById('connection-text').innerText = 'Online';
 
                 client.subscribe(topicStatus);
+                client.subscribe(topicLWT);
                 client.subscribe(topicLogs);
+                client.subscribe(topicHeartbeat);
 
-                if (intervaloPolling) clearInterval(intervaloPolling);
-                intervaloPolling = setInterval(() => {
-                    if (client && client.connected && !aguardandoResposta) {
-                        aguardandoResposta = true;
+                // Pede um STATUS inicial para popular a tela
+                setTimeout(() => {
+                    if (client && client.connected) {
                         client.publish(topicComando, 'STATUS');
-                        setTimeout(() => { aguardandoResposta = false; }, 1500);
                     }
-                }, 2000);
+                }, 500);
             });
 
-            client.on('message', (topic, message) => {
-                if (topic === topicStatus) {
-                    aguardandoResposta = false;
-                    try {
-                        const data = JSON.parse(message.toString());
-                        atualizarTela(data);
-                    } catch (e) { }
-                }
-                else if (topic === topicLogs) {
-                    try {
-                        const logData = JSON.parse(message.toString());
-                        // Verifica se a mensagem é de transição de estado para ir ao Histórico
-                        const isHistorico = logData.msg.startsWith("Estado alterado:");
-                        adicionarLog(logData.msg, logData.ts, isHistorico);
-                    } catch (e) { }
-                }
+            client.on('reconnect', () => {
+                document.getElementById('connection-text').innerText = 'Reconectando...';
+                document.getElementById('connection-dot').classList.remove('online');
+            });
+
+            client.on('error', (err) => {
+                console.error('[MQTT] Erro:', err);
             });
 
             client.on('close', () => {
                 document.getElementById('connection-dot').classList.remove('online');
                 document.getElementById('connection-text').innerText = 'Offline';
-                if (intervaloPolling) clearInterval(intervaloPolling);
+            });
+
+            client.on('message', (topic, message) => {
+                const texto = message.toString();
+
+                if (topic === topicStatus) {
+                    try {
+                        const data = JSON.parse(texto);
+                        if (!data.status) {
+                            atualizarTela(data);
+                            confirmarComandoSeAplicavel(data);
+                        }
+                    } catch (e) {
+                        console.error('Erro ao parsear status:', e, texto);
+                    }
+                }
+                else if (topic === topicLWT) {
+                    try {
+                        const lwt = JSON.parse(texto);
+                        if (lwt.status === 'offline') {
+                            document.getElementById('heartbeat-status').innerText = 'OFFLINE (LWT)';
+                            document.getElementById('heartbeat-status').style.color = '#ef4444';
+                            notificar("⚠️ ESP32 OFFLINE (LWT)", "O broker detectou queda do dispositivo.");
+                        } else if (lwt.status === 'online') {
+                            document.getElementById('heartbeat-status').innerText = 'Online (LWT)';
+                            document.getElementById('heartbeat-status').style.color = '#10b981';
+                        }
+                    } catch (e) { }
+                }
+                else if (topic === topicLogs) {
+                    try {
+                        const logData = JSON.parse(texto);
+                        const isHistorico = logData.msg && logData.msg.startsWith("Estado alterado:");
+                        adicionarLog(logData.msg || texto, logData.ts, isHistorico);
+                    } catch (e) {
+                        adicionarLog(texto, null, false);
+                    }
+                }
+                else if (topic === topicHeartbeat) {
+                    const hbEl = document.getElementById('heartbeat-status');
+                    hbEl.innerText = 'OK (' + new Date().toLocaleTimeString('pt-BR') + ')';
+                    hbEl.style.color = '#10b981';
+
+                    if (heartbeatTimer) clearTimeout(heartbeatTimer);
+                    heartbeatTimer = setTimeout(() => {
+                        hbEl.innerText = 'PERDIDO!';
+                        hbEl.style.color = '#ef4444';
+                        notificar("⚠️ ESP32 OFFLINE!", "O dispositivo parou de enviar heartbeat há 60s.");
+                    }, 60000);
+                }
             });
         }
 
-        function atualizarTela(data) {
-            if (data.status) return;
+        // ============================================================
+        // FEEDBACK DE COMANDOS
+        // ============================================================
+        function desabilitarBotoes(desabilitar) {
+            ['btn-armar', 'btn-desarmar', 'btn-teste'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.disabled = desabilitar;
+            });
+        }
 
-            // --- Atualiza Textos ---
+        function confirmarComandoSeAplicavel(data) {
+            if (!aguardandoConfirmacao || !comandoEnviado) return;
+
+            let confirmado = false;
+            if (comandoEnviado === 'ARMAR' && data.modo === 'ARMADO') confirmado = true;
+            if (comandoEnviado === 'DESARMAR' && data.modo === 'DESARMADO') confirmado = true;
+            if (comandoEnviado === 'TESTE') {
+                // TESTE é assíncrono; só confirmamos via log. Libera após 5s.
+            }
+
+            if (confirmado) {
+                aguardandoConfirmacao = false;
+                comandoEnviado = null;
+                desabilitarBotoes(false);
+            }
+        }
+
+        // ============================================================
+        // ATUALIZAÇÃO DA TELA
+        // ============================================================
+        function atualizarTela(data) {
             document.getElementById('modo').innerText = data.modo || '--';
             document.getElementById('porta').innerText = data.porta ? 'Aberta' : 'Fechada';
             document.getElementById('uid').innerText = data.uid || '--';
@@ -422,91 +707,186 @@
             document.getElementById('invasoes').innerText = data.invasoes || 0;
             document.getElementById('bloqueios').innerText = data.rearmes || 0;
 
-            // --- Lógica Semântica de Cores ---
+            // Temperatura e Umidade
+            const elTemp = document.getElementById('temperatura');
+            const elUmid = document.getElementById('umidade');
 
-            // 1. Card do Modo (Azul se DESARMADO, Branco se ARMADO)
+            if (data.temp_c !== undefined && data.temp_c !== -999 && !isNaN(data.temp_c)) {
+                elTemp.innerText = data.temp_c.toFixed(1) + '°C';
+                if (data.temp_c < 15) elTemp.className = 'card-value large text-info';
+                else if (data.temp_c < 30) elTemp.className = 'card-value large text-success';
+                else if (data.temp_c < 40) elTemp.className = 'card-value large text-warning';
+                else elTemp.className = 'card-value large text-danger';
+            } else {
+                elTemp.innerText = '--';
+                elTemp.className = 'card-value large text-neutral';
+            }
+
+            if (data.umid_pct !== undefined && data.umid_pct !== -999 && !isNaN(data.umid_pct)) {
+                elUmid.innerText = data.umid_pct.toFixed(1) + '%';
+                elUmid.className = 'card-value large text-info';
+            } else {
+                elUmid.innerText = '--';
+                elUmid.className = 'card-value large text-neutral';
+            }
+
+            // Cor do Modo
             const elModo = document.getElementById('modo');
-            elModo.className = 'card-value ' + (data.modo === 'DESARMADO' ? 'text-info' : 'text-neutral');
+            elModo.className = 'card-value ' + (data.modo === 'DESARMADO' ? 'text-warning' : 'text-neutral');
 
-            // 2. Card do Estado (A lógica mais importante)
+            // Cor do Estado
             const elEstado = document.getElementById('estado');
             const cardEstado = elEstado.closest('.card');
             elEstado.innerText = data.estado || '--';
-
-            // Limpa classes antigas
             cardEstado.className = 'card';
             elEstado.className = 'card-value';
 
-            if (data.estado === 'SEGURO' || data.estado === 'ACESSO_RFID') {
+            if (data.estado === 'NORMAL' || data.estado === 'ACESSO RFID') {
                 elEstado.classList.add('text-success');
                 cardEstado.classList.add('card-border-success');
             }
-            else if (data.estado === 'EMERGENCIA' || data.estado === 'INVASAO' || data.estado === 'EMERGENCIA_RACK' || data.estado === 'INVASAO_SALA') {
+            else if (data.estado === 'EMERGENCIA RACK' || data.estado === 'INVASAO SALA') {
                 elEstado.classList.add('text-danger');
                 cardEstado.classList.add('card-border-danger');
+                if (!notificacaoJaDisparada) {
+                    notificar("⚠️ EMERGÊNCIA NO RACK!", "Estado: " + data.estado + " | Porta: " + (data.porta ? "Aberta" : "Fechada"));
+                    notificacaoJaDisparada = true;
+                }
             }
-            else if (data.estado === 'AVISO SALA' || data.estado === 'AVISO_SALA' || data.estado === 'APROXIMACAO' || data.estado === 'APROXIMACAO_RACK') {
+            else if (data.estado === 'AVISO SALA' || data.estado === 'APROXIMACAO RACK') {
                 elEstado.classList.add('text-warning');
                 cardEstado.classList.add('card-border-warning');
             }
 
-            // 3. Card da Porta (Vermelho se aberta em modo armado, Amarelo se manutenção, Branco se fechada)
-            const elPorta = document.getElementById('porta');
-            if (data.porta) {
-                if (data.modo === 'ARMADO') {
-                    elPorta.className = 'card-value text-danger';
-                } else {
-                    elPorta.className = 'card-value text-warning';
-                }
-            } else {
-                elPorta.className = 'card-value text-neutral';
+            // Reset da flag de notificação fora de emergência
+            if (data.estado !== 'EMERGENCIA RACK' && data.estado !== 'INVASAO SALA') {
+                notificacaoJaDisparada = false;
             }
 
-            // 4. Card de Invasões (Vermelho se > 0)
-            const elInvasoes = document.getElementById('invasoes');
-            elInvasoes.className = 'card-value large ' + (data.invasoes > 0 ? 'text-danger' : 'text-neutral');
+            // Cor da Porta
+            const elPorta = document.getElementById('porta');
+            elPorta.className = 'card-value ' + (data.porta ? 'text-danger' : 'text-info');
 
-            // 5. Card de Acessos (Azul se > 0)
-            const elAcessos = document.getElementById('acessos');
-            elAcessos.className = 'card-value large ' + (data.acessos > 0 ? 'text-info' : 'text-neutral');
+            // Cor dos contadores
+            document.getElementById('invasoes').className = 'card-value large ' + (data.invasoes > 0 ? 'text-danger' : 'text-neutral');
+            document.getElementById('acessos').className = 'card-value large ' + (data.acessos > 0 ? 'text-info' : 'text-neutral');
+
+            // Gráfico (só plota se temperatura válida)
+            if (data.dist_cm !== undefined && data.dist_cm !== null) {
+                atualizarGrafico(data.dist_cm, data.temp_c);
+            }
         }
 
+        // ============================================================
+        // LOGS
+        // ============================================================
         function adicionarLog(mensagem, time, isHistorico) {
             const containerId = isHistorico ? 'log-historico' : 'log-eventos';
             const container = document.getElementById(containerId);
-
             const placeholder = container.querySelector('.placeholder-text');
             if (placeholder) placeholder.remove();
 
-            // O ESP32 envia o ts no formato "DD/MM HH:MM:SS". Se não vier, usa a hora local.
-            let displayTime = time;
-            if (!displayTime || displayTime.trim() === "" || displayTime === "undefined") {
-                displayTime = new Date().toLocaleTimeString('pt-BR');
+            const displayTime = time || new Date().toLocaleTimeString('pt-BR');
+
+            let corTexto = '#cbd5e1';
+            let corBorda = '#334155';
+            const msgUpper = (mensagem || '').toUpperCase();
+
+            if (msgUpper.includes("NEGADO") || msgUpper.includes("EMERGENCIA") || msgUpper.includes("INVASAO")) {
+                corTexto = '#ef4444'; corBorda = '#ef4444';
+            } else if (msgUpper.includes("BLOQUEADO") || msgUpper.includes("AVISO") || msgUpper.includes("MANUTENCAO")) {
+                corTexto = '#f59e0b'; corBorda = '#f59e0b';
+            } else if (msgUpper.includes("AUTORIZADO") || msgUpper.includes("FECHADA") || msgUpper.includes("EXECUTADO") || msgUpper.includes("REARMADO")) {
+                corTexto = '#10b981'; corBorda = '#10b981';
+            } else if (msgUpper.includes("ABERTA")) {
+                corTexto = '#ef4444'; corBorda = '#ef4444';
+            } else if (msgUpper.includes("COMANDO REMOTO")) {
+                corTexto = '#3b82f6'; corBorda = '#3b82f6';
             }
 
             const logDiv = document.createElement('div');
             logDiv.className = 'log-item';
-
-            const corTexto = isHistorico ? 'color: #e2e8f0;' : 'color: #cbd5e1;';
+            logDiv.style.borderLeft = `3px solid ${corBorda}`;
+            logDiv.style.paddingLeft = '10px';
 
             logDiv.innerHTML = `
-            <span style="${corTexto}">${mensagem}</span>
-            <span style="color:#94a3b8; font-family: monospace;">${displayTime}</span>
-        `;
+                <span style="color:${corTexto}; font-weight: 500;">${mensagem}</span>
+                <span style="color:#94a3b8; font-family: monospace;">${displayTime}</span>
+            `;
 
             container.prepend(logDiv);
+            if (container.children.length > 20) container.lastChild.remove();
 
-            if (container.children.length > 20) {
-                container.lastChild.remove();
+            // Se chegou log de TESTE concluído, libera os botões
+            if (aguardandoConfirmacao && comandoEnviado === 'TESTE' &&
+                msgUpper.includes("TESTE CONCLUIDO")) {
+                aguardandoConfirmacao = false;
+                comandoEnviado = null;
+                desabilitarBotoes(false);
             }
         }
 
+        // ============================================================
+        // COMANDOS
+        // ============================================================
         function enviarComando(comando) {
-            if (client && client.connected) {
-                client.publish(topicComando, comando);
-            } else {
+            if (!client || !client.connected) {
                 alert('Erro: Não conectado ao broker MQTT.');
+                return;
             }
+
+            client.publish(topicComando, comando);
+
+            if (comando === 'TESTE') {
+                adicionarLog("Comando TESTE enviado. Aguardando resultado...", null, false);
+                aguardandoConfirmacao = true;
+                comandoEnviado = 'TESTE';
+                desabilitarBotoes(true);
+                // Libera após 15s no máximo (teste leva ~3s)
+                setTimeout(() => {
+                    if (comandoEnviado === 'TESTE') {
+                        aguardandoConfirmacao = false;
+                        comandoEnviado = null;
+                        desabilitarBotoes(false);
+                    }
+                }, 15000);
+            } else {
+                adicionarLog("Comando " + comando + " enviado. Aguardando confirmação...", null, false);
+                aguardandoConfirmacao = true;
+                comandoEnviado = comando;
+                desabilitarBotoes(true);
+                // Libera após 5s se não confirmar
+                setTimeout(() => {
+                    if (comandoEnviado === comando) {
+                        aguardandoConfirmacao = false;
+                        comandoEnviado = null;
+                        desabilitarBotoes(false);
+                    }
+                }, 5000);
+            }
+        }
+
+        function enviarReset() {
+            if (!client || !client.connected) {
+                alert('Erro: Não conectado ao broker MQTT.');
+                return;
+            }
+
+            // Token via prompt — NÃO fica hardcoded no HTML
+            const token = prompt("Digite o token de reset:");
+            if (!token) return;
+
+            client.publish(topicComando, 'RESET ' + token);
+            adicionarLog("Comando RESET enviado (aguardando confirmação no log).", null, false);
+        }
+
+        function forcarAtualizacao() {
+            if (!client || !client.connected) {
+                alert('Erro: Não conectado ao broker MQTT.');
+                return;
+            }
+            client.publish(topicComando, 'STATUS');
+            adicionarLog("Solicitando atualização de status...", null, false);
         }
 
         window.onload = conectar;

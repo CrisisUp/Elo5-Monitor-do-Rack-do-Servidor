@@ -1,4 +1,12 @@
-# 📋 RESUMO DO PROJETO — RACK MONITOR
+# 📋 RACK MONITOR — Sistema de Monitoramento de Rack com ESP32
+
+Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais,
+dashboard web em tempo real e controle remoto via MQTT.
+
+Versão atual: **firmware v6.4 / dashboard v3.1**
+Ambiente de desenvolvimento: **Wokwi (gratuito) + MQTTX (gratuito) + broker público**
+
+---
 
 ## 🎯 Visão Geral
 
@@ -18,6 +26,10 @@ Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, d
      ├─ Máquina de Estados (Alarme)                      │
      └─ NVS (Persistência)                               │
 ```
+
+⚠️ Limitação do Wokwi gratuito: o ESP32 simulado só existe enquanto a aba
+está aberta. Ao fechar, o dispositivo "morre", o LWT dispara offline e o
+dashboard fica offline. Não há gateway privado nem simulação 24/7 no plano gratuito.
 
 ## 🧩 Componentes do Sistema
 
@@ -57,29 +69,51 @@ Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, d
 
 ### Filtros implementados
 
-- LDR: histerese 1800-2200 + debounce 800ms
-- Ultrassônico: média móvel de 5 amostras
-- Porta: debounce 200ms
-- Botão: debounce 250ms + janela de clique duplo 400ms + clique longo 3000ms
-- Estados: debounce de transição 300ms
+| Sensor | Filtro |
+| :--- | :--- |
+| LDR | histerese 1800–2200 + debounce 800 ms |
+| Ultrassônico | média móvel de 5 amostras; rejeita <2 cm e >400 cm |
+| Porta | debounce 200 ms |
+| Botão | debounce 250 ms + clique duplo <400 ms + clique longo >3000 ms |
+| Estados | debounce de transição 300 ms |
 
-### 2. Comunicação MQTT
+### 🌡️ Alarmes ambientais (v6.4)
 
-#### Tópicos
+| Faixa | Temperatura | Umidade | Ação |
+| :--- | :--- | :--- | :--- |
+| Normal | < 30 °C | < 65 % | — |
+| Alerta | ≥ 30 °C | ≥ 65 % | Log WARN + `rack/logs` |
+| Crítico | ≥ 35 °C | ≥ 80 % | Log CRIT + `rack/logs` |
+| Taxa de subida | ≥ 1 °C/min | — | Log CRIT + `rack/logs` |
 
-| Tópico | Direção | Conteúdo |
-| :--- | :--- | :--- |
-| `rack/status` | ESP32 → Site | JSON com estado, modo, sensores, contadores (retained) |
-| `rack/comando` | Site → ESP32 | Comandos: `ARMAR`, `DESARMAR`, `STATUS`, `RESET`, `TESTE` |
-| `rack/logs` | ESP32 → Site | Eventos detalhados (porta, cartão, transições) |
+- **Histerese:** 2 °C (temperatura) / 5 % (umidade) para desligar o alarme.
+- **Estado consolidado** (`ambiente`: `OK` / `ALERTA` / `CRITICO`) exposto no JSON de status.
+- **Limiares configuráveis** via Serial (`SET TEMP_ALERTA`, `SET TEMP_CRIT`, `SET UMID_ALERTA`, `SET UMID_CRIT`) e persistidos na NVS.
+- **Buzzer ambiental opcional** (`#define ALARME_SONORO_AMBIENTAL 0` por padrão) — respeita prioridade de segurança: nunca bipa durante `EMERGENCIA_RACK` ou `INVASAO_SALA`.
+
+### 📡 Comunicação MQTT (v6.4)
+
+#### Tópicos (com prefixo configurável)
+
+O prefixo `rack_monitor_ABCD1234` é **único do seu projeto**. Troque por algo seu
+no firmware **e** no dashboard. Isso **não é segurança** — só reduz ruído de
+curiosos no broker público.
+
+| Tópico | Direção | Retain | Conteúdo |
+| :--- | :--- | :---: | :--- |
+| `rack_monitor_ABCD1234/status` | ESP32 → Site | ✅ | JSON com estado, modo, sensores, contadores, flags ambientais |
+| `rack_monitor_ABCD1234/status/lwt` | Broker → Site | ✅ | `{"status":"online"}` ou `{"status":"offline"}` (LWT) |
+| `rack_monitor_ABCD1234/comando` | Site → ESP32 | ❌ | `ARMAR`, `DESARMAR`, `STATUS`, `RESET <token>`, `TESTE` |
+| `rack_monitor_ABCD1234/logs` | ESP32 → Site | ❌ | Eventos detalhados (porta, cartão, transições, ambiente) |
+| `rack_monitor_ABCD1234/heartbeat` | ESP32 → Site | ❌ | Sinal de vida a cada 30 s |
 
 #### Payload de status (exemplo)
 
 ```json
 {
-  "estado": "SEGURO",
+  "estado": "NORMAL",
   "modo": "ARMADO",
-  "ts": "2026-10-20T19:24:26",
+  "ts": "2026-10-23T19:24:26",
   "porta": false,
   "luz": false,
   "dist_cm": 318.8,
@@ -88,102 +122,187 @@ Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, d
   "uid": "01020304",
   "acessos": 5,
   "invasoes": 1,
-  "rearmes": 1
+  "rearmes": 1,
+  "alerta_temp": false,
+  "critico_temp": false,
+  "alerta_umid": false,
+  "critico_umid": false,
+  "taxa_temp_alerta": false,
+  "ambiente": "OK",
+  "temp_c": 24.5,
+  "umid_pct": 48.0
 }
 ```
 
-### Features MQTT implementadas
+### Features MQTT
 
-- ✅ LWT (Last Will) — broker publica {"status":"offline"} se ESP32 cair
-- ✅ Retain — novos assinantes recebem último estado imediatamente
-- ✅ Comandos remotos — ARMAR/DESARMAR via MQTT
-- ✅ Logs de auditoria — tópico separado para eventos detalhados
-- ✅ Reconexão automática — Wi-Fi e MQTT a cada 5s
-- ✅ Anti-flood — trava no site (só envia STATUS após resposta)
+- ✅ **LWT em tópico dedicado** (`.../status/lwt`) — não sobrescreve o status retido real
+- ✅ **Retain no status** — novos assinantes recebem o último estado imediatamente
+- ✅ **Republicação automática** do status completo após reconectar
+- ✅ **Rate limit de `STATUS`** (2 s) — protege contra clientes abusivos
+- ✅ **`RESET` com token** — contadores de segurança (`invasoes`, `rearmes`) não são zerados
+- ✅ **Log de motivo de desconexão** (`rc=...`)
+- ✅ **Heartbeat a cada 30 s** — permite ao dashboard detectar queda em 60 s
+- ✅ **Reconexão automática** (Wi-Fi e MQTT a cada 5 s)
+- ✅ **Buffer MQTT** aumentado para 512 bytes
 
-### 1. Persistência NVS
+---
+
+### 💾 Persistência NVS
 
 #### Salvos na flash do ESP32
 
-- limiar (distância de aproximação)
-- timeout (tempo de desarme)
-- invasoes, aberturas, acessos, desarmes (contadores)
+**Configuração:**
+- `limiar` (distância de aproximação)
+- `timeout` (tempo de desarme)
+- `t_alert`, `t_crit`, `u_alert`, `u_crit` (limiares ambientais)
+
+**Contadores:**
+- `invasoes`, `aberturas`, `acessos`, `desarmes`, `rearmes`
+
+**Cartões RFID:**
+- `total_cards` + `card_0`, `card_1`, … (deduplicados)
 
 #### Comportamento
 
-- Salva ao mudar config (SET LIMIAR, SET TIMEOUT, RESET)
-- Salva a cada 60s (contadores)
-- Carrega no setup() antes de iniciar lógica
+- Salva ao mudar config (`SET LIMIAR`, `SET TIMEOUT`, `SET TEMP_*`, `SET UMID_*`, `RESET`, `ADD_CARD`)
+- Salva a cada 60 s **apenas se algum contador mudou** (dirty flag)
+- Carrega no `setup()` antes de iniciar a lógica
 
-## ⚠️ Limitação do Wokwi: a flash virtual é zerada ao parar a simulação. Em hardware real, persiste normalmente.
+> ⚠️ **Limitação do Wokwi:** a flash virtual é zerada ao parar a simulação.
+> Em hardware real, persiste normalmente.
 
-### 2. Site Web (index.html)
+---
 
-#### Design: Dark Mode profissional com paleta semântica de cores
+### 🖥️ Dashboard Web (index.html)
 
-### Estrutura visual
+#### Design
 
-- Header — logo + indicador de conexão
-- Cards de Status (linha 1) — Modo, Estado, Porta, IP, UID
-- Cards de Contadores (linha 2) — Acessos RFID, Invasões, Rearmes Bloqueados
-- Botões de Controle — Armar, Desarmar, Modo Teste, Reset
-- Log de Eventos — ações físicas (porta, cartão, comandos)
-- Histórico de Status — transições de estado
+Dark mode com paleta semântica de cores.
 
-Sistema de cores semântico:
+#### Estrutura visual
+
+- **Header** — logo + indicador de conexão + status do heartbeat ESP32
+- **Cards de Status** — Modo, Estado, Porta, IP, UID
+- **Cards de Contadores** — Acessos RFID, Invasões, Rearmes Bloqueados, Temperatura, Umidade
+- **Botões de Controle** — Armar, Desarmar, Modo Teste, Reset (token via `prompt`), Atualizar agora
+- **Gráfico histórico** — distância e temperatura (Chart.js, últimos 60 pontos, persistido em `localStorage`)
+- **Log de Eventos** — ações físicas + comandos remotos
+- **Histórico de Status** — transições de estado
+
+#### Sistema de cores semântico
 
 | Cor | Significado | Onde aparece |
-| :--- | :--- | :--- |
-| 🟢 **Verde** | Tudo normal | Estado SEGURO, conexão online |
-| 🔵 **Azul** | Informação/manutenção | Modo DESARMADO, IP, acessos |
-| 🟡 **Amarelo** | Aviso | AVISO_SALA, APROXIMAÇÃO, porta em manutenção |
-| 🔴 **Vermelho** | Perigo/crítico | EMERGENCIA, invasão, porta aberta (armado) |
-| ⚪ **Branco** | Neutro | Modo ARMADO, porta fechada |
+| :---: | :--- | :--- |
+| 🟢 Verde | Tudo normal | Estado `NORMAL`, `ACESSO RFID`, conexão online |
+| 🔵 Azul | Informação/manutenção | Modo `DESARMADO`, IP, acessos |
+| 🟡 Amarelo | Aviso | `AVISO SALA`, `APROXIMAÇÃO`, ambiente `ALERTA` |
+| 🔴 Vermelho | Perigo/crítico | `EMERGENCIA`, invasão, porta aberta (armado), ambiente `CRITICO` |
+| ⚪ Branco | Neutro | Modo `ARMADO`, porta fechada |
 
-Bordas dinâmicas: o card de estado ganha borda colorida + glow conforme o estado.
+#### Tecnologias
 
-### Tecnologias
-
-- mqtt.js (via CDN) — conexão WebSocket com broker
-- wss://broker.emqx.io:8084/mqtt — conexão segura
+- `mqtt.js` (via CDN) — conexão WebSocket
+- `wss://broker.emqx.io:8084/mqtt` — conexão segura
+- `Chart.js` (via CDN) — gráfico histórico
 - Fonte Inter (Google Fonts)
 - JavaScript puro (sem frameworks)
 
-### Correções aplicadas
+#### Comportamento (v3.1)
 
-- ✅ Bug do toFixed() em mensagens sem dist_cm
-- ✅ Anti-flood (trava aguardandoResposta)
+- **Sem polling agressivo** — o dashboard se atualiza por:
+  - **Retain** (ao conectar, recebe o último status)
+  - **Transições** (firmware publica automaticamente)
+  - **Heartbeat** (a cada 30 s)
+  - **`STATUS` inicial** (1× ao conectar)
+- **LWT** assinado em `.../status/lwt` — detecta queda imediata do ESP32
+- **`RESET` com token** via `prompt()` — o token não fica hardcoded no HTML
+- **Botão "Atualizar agora"** — pede um `STATUS` sob demanda (respeitando o rate limit de 2 s); útil para diagnóstico
+- **Feedback visual de comandos** — botões desabilitam até confirmação via `rack/status` (ou timeout de 5 s)
+- **Histórico do gráfico** persistido em `localStorage`
+- **`temp_c: -999`** (DHT falhou) — não é plotado no gráfico
+
+#### Correções aplicadas
+
+- ✅ Bug do `toFixed()` em mensagens sem `dist_cm`
 - ✅ Separação entre logs de eventos e histórico de status
-- ✅ Timestamp sempre exibido (formato DD/MM HH:MM:SS)
-- ✅ Quebra de palavras longas (word-break: break-word)
-- ✅ Nomes amigáveis para estados (EMERGENCIA, não EMERGENCIA_RACK)
+- ✅ Timestamp sempre exibido (formato `DD/MM HH:MM:SS`)
+- ✅ Quebra de palavras longas (`word-break: break-word`)
+- ✅ Nomes amigáveis para estados (`NORMAL`, não `SEGURO`)
+- ✅ Notificação de navegador em emergência (sem repetir)
+- ✅ `reconnectPeriod: 5000` explícito + feedback de reconexão
 
-### 🆕 Conceito Novo: MQTTX
+### 🧪 MQTTX (cliente MQTT gráfico)
 
-O que é: Um cliente MQTT gráfico (Web ou Desktop) que serve como "WhatsApp" para conversar com o ESP32 via broker.
+#### O que é
 
-Por que foi útil:
+Um cliente MQTT gráfico (Web ou Desktop) que serve como "WhatsApp" para
+conversar com o ESP32 via broker.
 
-- Ver mensagens em tempo real — inscrever em rack/status e rack/logs
-- Enviar comandos — publicar em rack/comando para testar ARMAR, DESARMAR, etc.
-- Testar Retain e LWT — verificar se o broker entregou mensagem retida ou testamento
-- Debug de comunicação — isolar se o problema é ESP32, broker ou site
+#### Por que é útil
 
-Como usar:
+- **Ver mensagens em tempo real** — inscrever em `.../status` e `.../logs`
+- **Enviar comandos** — publicar em `.../comando` para testar `ARMAR`, `DESARMAR`, `RESET <token>`, `TESTE`
+- **Testar Retain e LWT** — verificar se o broker entregou a mensagem retida ou o testamento
+- **Debug de comunicação** — isolar se o problema é ESP32, broker ou site
 
-- Acesse mqttx.app/web-client
-- Conecte em wss://broker.emqx.io:8084/mqtt
-- Inscreva em rack/status (ver estado) e rack/logs (ver eventos)
-- Para comandos: publique em rack/comando com payload ARMAR ou DESARMAR
-- Conceitos MQTT aprendidos:
-- Broker — intermediário que recebe e distribui mensagens
-- Publish/Subscribe — modelo de comunicação (não é cliente-servidor)
-- Tópicos — "canais" onde mensagens circulam
-- QoS — qualidade de serviço (0, 1, 2)
-- Retain — broker guarda última mensagem do tópico
-- LWT — mensagem automática publicada se cliente desconectar sem avisar
+#### Como usar (MQTTX Desktop — TCP 1883)
 
-## 📁 Estrutura de Arquivos
+1. Conecte em `mqtt://broker.emqx.io:1883`
+2. Inscreva em `rack_monitor_ABCD1234/#` (recebe todos os tópicos do prefixo)
+3. Publique em `rack_monitor_ABCD1234/comando`:
+   - `STATUS` — pede status (respeita rate limit de 2 s)
+   - `ARMAR` / `DESARMAR` — muda modo
+   - `TESTE` — inicia autodiagnóstico
+   - `RESET rack2026` — zera contadores operacionais (preserva segurança)
+
+#### MQTTX Web (WSS 8084)
+
+1. Acesse `mqttx.app/web-client`
+2. Conecte em `wss://broker.emqx.io:8084/mqtt`
+3. Mesmos tópicos/comandos do Desktop
+
+#### Conceitos MQTT aprendidos
+
+- **Broker** — intermediário que recebe e distribui mensagens
+- **Publish/Subscribe** — modelo de comunicação (não é cliente-servidor)
+- **Tópicos** — "canais" onde mensagens circulam
+- **QoS** — qualidade de serviço (0, 1, 2)
+- **Retain** — broker guarda a última mensagem do tópico
+- **LWT** — mensagem automática publicada se cliente desconectar sem avisar
+
+---
+
+### 🖥️ Comandos Serial (firmware)
+
+| Comando | Descrição |
+| :--- | :--- |
+| `SET LIMIAR <5-400>` | Ajusta limiar ultrassônico (persiste) |
+| `SET TIMEOUT <0-1440>` | Timeout de desarme em minutos (persiste) |
+| `SET TEMP_ALERTA <15-50>` | Limiar de temperatura para alerta (persiste) |
+| `SET TEMP_CRIT <20-60>` | Limiar de temperatura crítico (persiste) |
+| `SET UMID_ALERTA <30-90>` | Limiar de umidade para alerta (persiste) |
+| `SET UMID_CRIT <40-100>` | Limiar de umidade crítico (persiste) |
+| `STATUS` | Status completo (contadores, limiares, Wi-Fi, MQTT) |
+| `ARMAR` | Força `ARMADO` (se porta fechada) |
+| `DESARMAR` | Força `DESARMADO` |
+| `TESTE` | Modo autodiagnóstico |
+| `RTC` | Mostra hora do RTC |
+| `RTC YYYY-MM-DD HH:MM:SS` | Ajusta RTC |
+| `RESET` | Zera contadores operacionais (preserva segurança) |
+| `ADD_CARD <UID>` | Cadastra cartão na NVS (deduplicado) |
+| `LIST_CARDS` | Lista cartões autorizados |
+| `HELP` | Lista comandos |
+
+#### Botão físico (multifunção)
+
+- **Curto** — reset operacional
+- **Longo** — rearme forçado
+- **Duplo** — modo teste
+
+---
+
+### 📁 Estrutura de Arquivos
 
 ```text
 rack-monitor/
@@ -193,57 +312,92 @@ rack-monitor/
 └── server/
     └── public/
         └── index.html  # Dashboard web
-```
 
-## 🎓 Princípios de Arquitetura Aplicados
+#### Bibliotecas necessárias (`libraries.txt`)
 
-Sensores não decidem — só medem e filtram
-Atuadores não leem sensores — só consomem estado
-Alarme é fonte única de verdade — recebe struct/eventos
-Eventos são fatos — botão foi pressionado, cartão foi lido
-Toda transição é logada — auditoria completa
-loop() só orquestra — update → coleta eventos → renderiza
-MQTT é observador — comandos remotos pedem via API pública
-NVS é passiva — não interfere na lógica do alarme
+- `PubSubClient`
+- `MFRC522`
+- `Adafruit SSD1306`
+- `Adafruit GFX Library`
+- `RTClib`
+- `DHT sensor library`
 
-## ✅ O Que Está Funcionando
+---
 
-### Firmware
+### 🎓 Princípios de Arquitetura Aplicados
+
+1. **Sensores não decidem** — só medem e filtram
+2. **Atuadores não leem sensores** — só consomem estado
+3. **Alarme é fonte única de verdade** — recebe struct/eventos
+4. **Eventos são fatos** — botão foi pressionado, cartão foi lido
+5. **Toda transição é logada** — auditoria completa
+6. **`loop()` só orquestra** — update → coleta eventos → renderiza
+7. **MQTT é observador** — comandos remotos pedem via API pública
+8. **NVS é passiva** — não interfere na lógica do alarme
+
+---
+
+### ✅ O que está funcionando (v6.4 / v3.1)
+
+#### Firmware
 
 - ☑ Sensores com filtros e debounce
 - ☑ Máquina de estados com transições
 - ☑ RFID + botão emitindo eventos
 - ☑ Vigilante com bloqueio de rearme
 - ☑ Wi-Fi + MQTT (LWT, Retain, comandos)
-- ☑ NVS (persistência de config e contadores)
+- ☑ NVS (persistência de config, contadores, limiares ambientais, cartões)
 - ☑ Logs de auditoria via MQTT
+- ☑ Alarmes ambientais (temp/umid) com histerese, crítico e taxa de subida
+- ☑ Estado ambiental consolidado no JSON de status
+- ☑ Rate limit de `STATUS` + `RESET` com token
+- ☑ Dirty flag para reduzir desgaste da flash
 
-### Site
+#### Dashboard
 
 - ☑ Conexão WebSocket com broker
-- ☑ Cards com atualização em tempo real (polling 2s)
+- ☑ Atualização em tempo real via retain + transições + heartbeat
 - ☑ Sistema de cores semântico
 - ☑ Logs separados (eventos + histórico)
-- ☑ Comandos remotos funcionais
+- ☑ Comandos remotos funcionais (`RESET` com token via `prompt`)
 - ☑ Timestamp em todos os logs
-- ☑ Anti-flood
+- ☑ Gráfico histórico com persistência em `localStorage`
+- ☑ Detecção de queda do ESP32 via LWT + heartbeat
+- ☑ Sem polling agressivo
 
-## 🚀 Próximos Passos Sugeridos (para amanhã)
+---
 
-- Ajustes visuais finais — testar responsividade mobile, alinhamento dos botões
-Adicionar gráfico histórico — usar Chart.js para gráfico de distância/estado ao longo do tempo
-- Autenticação MQTT — usuário/senha no broker (segurança)
-- Migrar para broker privado — em produção, não usar emqx.io público
-- Hospedar o site — GitHub Pages, Vercel ou Netlify (gratuito)
-- Testes em hardware real — migrar do Wokwi para ESP32 físico
-- Documentação final — README do projeto com diagrama de arquitetura
+### ⚠️ Limitações do ambiente gratuito
 
-## 📌 Lembretes Importantes
+| Limitação | Impacto |
+| :--- | :--- |
+| Wokwi gratuito só roda com a aba aberta | ESP32 "morre" ao fechar; dashboard fica offline |
+| Gateway público do Wokwi | ESP32 não recebe conexões de entrada |
+| Broker público `broker.emqx.io` | Sem autenticação; qualquer um pode publicar em `.../comando` |
+| Token de `RESET` no firmware | `rack2026` é público — troque por um valor seu antes de produção |
+| Flash virtual do Wokwi zera ao parar | NVS não persiste entre sessões de simulação |
 
-- Backup: baixe uma cópia do sketch.ino e index.html para o seu computador (Wokwi pode perder).
-- Bibliotecas: PubSubClient, MFRC522, Adafruit SSD1306, RTClib, Adafruit GFX devem estar no libraries.txt.
-- Wokwi-GUEST — rede Wi-Fi virtual do Wokwi (sem senha).
-- broker.emqx.io — broker público gratuito (limite de mensagens).
-- Porta 8084 (WSS) — usada pelo navegador; 1883 (TCP) — usada pelo ESP32.
+---
 
-Parabéns pelo projeto! Você tem um sistema IoT completo, modular, documentado, com dashboard profissional e comunicação MQTT robusta. Amanhã é só retomar daqui. 🚀
+### 🚀 Próximos passos sugeridos
+
+- **Autenticação MQTT** — usuário/senha no broker (HiveMQ Cloud free tier, EMQX Cloud)
+- **Broker privado** — em produção, nunca usar `broker.emqx.io` público
+- **TLS no firmware** — `WiFiClientSecure` + porta 8883 (testar se o Wokwi gratuito permite)
+- **Hospedar o dashboard** — GitHub Pages, Vercel ou Netlify (gratuito)
+- **Testes em hardware real** — migrar do Wokwi para ESP32 físico
+- **Dois sensores DHT** — entrada e saída de ar do rack (pontos quentes)
+- **Persistência do histórico** — backend com InfluxDB / SQLite para séries temporais
+- **Notificação por e-mail / webhook** — em vez de só dashboard
+
+---
+
+### 📌 Lembretes importantes
+
+- **Backup:** baixe uma cópia do `sketch.ino` e `index.html` para o seu computador (Wokwi pode perder).
+- **Bibliotecas:** devem estar no `libraries.txt` do Wokwi.
+- **`Wokwi-GUEST`** — rede Wi-Fi virtual do Wokwi (sem senha).
+- **`broker.emqx.io`** — broker público gratuito (limite de mensagens).
+- **Porta 8084 (WSS)** — usada pelo navegador; **1883 (TCP)** — usada pelo ESP32.
+- **Prefixos de tópico** — o `rack_monitor_ABCD1234` deve ser idêntico no firmware, MQTTX e dashboard.
+- **Token de RESET** — troque `rack2026` por um valor seu no firmware antes de qualquer demonstração pública.
