@@ -1,5 +1,12 @@
 # 📋 RACK MONITOR — Sistema de Monitoramento de Rack com ESP32
 
+[![ESP32](https://img.shields.io/badge/ESP32-DevKit-blue?logo=espressif&logoColor=white)](https://www.espressif.com/)
+[![MQTT](https://img.shields.io/badge/MQTT-broker.emqx.io-purple?logo=eclipse-mosquitto&logoColor=white)](https://mqtt.org/)
+[![Wokwi](https://img.shields.io/badge/Wokwi-Simulator-green?logo=arduino&logoColor=white)](https://wokwi.com/)
+[![Doxygen](https://img.shields.io/badge/Docs-Doxygen-blue?logo=readthedocs&logoColor=white)](./docs/html/index.html)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-6.4-brightgreen)](./CHANGELOG.md)
+
 Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais,
 dashboard web em tempo real e controle remoto via MQTT.
 
@@ -11,6 +18,22 @@ Ambiente de desenvolvimento: **Wokwi (gratuito) + MQTTX (gratuito) + broker púb
 ## 🎯 Visão Geral
 
 Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, dashboard web em tempo real e controle remoto via MQTT.
+
+## 📚 Documentação Técnica Completa
+
+A documentação detalhada de todas as classes, métodos, structs e variáveis foi gerada automaticamente com **Doxygen**.
+
+👉 **[Clique aqui para acessar a documentação (HTML)](./docs/html/index.html)**
+
+*Ou, se preferir a versão online hospedada no GitHub Pages:*
+👉 **[Acessar versão online](https://[[SEU_USUARIO.github.io/rack-monitor](https://github.com/CrisisUp/Elo5-Monitor-do-Rack-do-Servidor)](https://github.com/CrisisUp/Elo5-Monitor-do-Rack-do-Servidor)/)**
+
+A documentação cobre:
+
+- **Classes:** `Alarme`, `Audio`, `DisplayOLED`, `NotificadorMQTT`, etc.
+- **Structs:** `LeiturasSensores`, `EventoRFID`
+- **Enums:** `EstadoSistema`, `ModoVigilante`, `EstadoAmbiental`
+- **Funções:** `_verificarAmbiente()`, `executarModoTeste()`, etc.
 
 ## 📦 Arquitetura Final
 
@@ -312,6 +335,7 @@ rack-monitor/
 └── server/
     └── public/
         └── index.html  # Dashboard web
+```
 
 #### Bibliotecas necessárias (`libraries.txt`)
 
@@ -401,3 +425,29 @@ rack-monitor/
 - **Porta 8084 (WSS)** — usada pelo navegador; **1883 (TCP)** — usada pelo ESP32.
 - **Prefixos de tópico** — o `rack_monitor_ABCD1234` deve ser idêntico no firmware, MQTTX e dashboard.
 - **Token de RESET** — troque `rack2026` por um valor seu no firmware antes de qualquer demonstração pública.
+
+## 📚 Referências e Agradecimentos
+
+Este projeto foi construído sobre os ombros de gigantes. Agradecimentos às seguintes documentações e ferramentas:
+
+### Bibliotecas e Ferramentas
+
+- [**Wokwi**](https://docs.wokwi.com/) — Simulador de ESP32 (gratuito)
+- [**PubSubClient**](https://pubsubclient.knolleary.net/) — Cliente MQTT para Arduino/ESP32
+- [**MFRC522**](https://github.com/miguelbalboa/rfid) — Biblioteca do leitor RFID
+- [**Adafruit SSD1306**](https://learn.adafruit.com/monochrome-oled-breakouts) + [**GFX**](https://learn.adafruit.com/adafruit-gfx-graphics-library) — Display OLED
+- [**RTClib**](https://learn.adafruit.com/adafruit-ds3231-precision-rtc-breakout) — Driver do RTC DS3231
+- [**DHT sensor library**](https://learn.adafruit.com/dht) — Sensor DHT22
+- [**Preferences**](https://docs.espressif.com/projects/arduino-esp32/en/latest/api/preferences.html) — NVS (persistência em flash)
+- [**Doxygen**](https://www.doxygen.nl/) — Geração automática da documentação técnica
+
+### Conceitos e Tutoriais
+
+- [MQTT Essentials (HiveMQ)](https://www.hivemq.com/mqtt-essentials/) — Excelente introdução aos conceitos de MQTT
+- [MQTT Retain and LWT (EMQX)](https://www.emqx.com/en/blog/mqtt-retained-messages) — Documentação sobre Retain e Last Will
+- [ESP32 Strapping Pins (Espressif)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/gpio.html) — Cuidados com GPIOs 0, 2, 12 e 15
+
+### Inspiração
+
+- Documentação da [Arduino Reference](https://www.arduino.cc/reference/en/) — Boas práticas de código embarcado
+- [The Twelve-Factor App](https://12factor.net/) — Princípios de design de software
