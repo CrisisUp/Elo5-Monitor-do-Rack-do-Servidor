@@ -765,7 +765,27 @@
 
             // Cor da Porta
             const elPorta = document.getElementById('porta');
-            elPorta.className = 'card-value ' + (data.porta ? 'text-danger' : 'text-info');
+            const cardPorta = elPorta.closest('.card');
+
+            elPorta.innerText = data.porta ? 'Aberta' : 'Fechada';
+
+            // Reseta o card
+            cardPorta.className = 'card';
+            elPorta.className = 'card-value';
+
+            if (data.porta) {
+                // Força vermelho via estilo inline (ignora conflitos CSS)
+                elPorta.style.color = '#ef4444';
+                elPorta.style.fontWeight = 'bold';
+                cardPorta.style.borderColor = '#ef4444';
+                cardPorta.style.boxShadow = '0 0 15px rgba(239, 68, 68, 0.2)';
+            } else {
+                // Força azul via estilo inline
+                elPorta.style.color = '#3b82f6';
+                elPorta.style.fontWeight = 'normal';
+                cardPorta.style.borderColor = '#334155';
+                cardPorta.style.boxShadow = 'none';
+            }
 
             // Cor dos contadores
             document.getElementById('invasoes').className = 'card-value large ' + (data.invasoes > 0 ? 'text-danger' : 'text-neutral');
@@ -792,15 +812,35 @@
             let corBorda = '#334155';
             const msgUpper = (mensagem || '').toUpperCase();
 
-            if (msgUpper.includes("NEGADO") || msgUpper.includes("EMERGENCIA") || msgUpper.includes("INVASAO")) {
+            // 1. Prioridade Máxima: Erros e Estados Críticos (Vermelho)
+            if (msgUpper.includes("NEGADO") ||
+                msgUpper.includes("EMERGENCIA") ||
+                msgUpper.includes("INVASAO") ||
+                msgUpper.includes("CRITICO") ||
+                msgUpper.includes("FALHA")) { // <-- ADICIONE AQUI
                 corTexto = '#ef4444'; corBorda = '#ef4444';
-            } else if (msgUpper.includes("BLOQUEADO") || msgUpper.includes("AVISO") || msgUpper.includes("MANUTENCAO")) {
+            }
+            // 2. Avisos e Bloqueios (Laranja/Amarelo)
+            else if (msgUpper.includes("BLOQUEADO") ||
+                msgUpper.includes("AVISO") ||
+                msgUpper.includes("MANUTENCAO") ||
+                msgUpper.includes("ALERTA")) {
                 corTexto = '#f59e0b'; corBorda = '#f59e0b';
-            } else if (msgUpper.includes("AUTORIZADO") || msgUpper.includes("FECHADA") || msgUpper.includes("EXECUTADO") || msgUpper.includes("REARMADO")) {
+            }
+            // 3. Sucessos e Normalizações (Verde)
+            else if (msgUpper.includes("AUTORIZADO") ||
+                msgUpper.includes("FECHADA") ||
+                msgUpper.includes("EXECUTADO") ||
+                msgUpper.includes("REARMADO") ||
+                msgUpper.includes("NORMALIZADO")) { // Pega "normalizada" e "normalizado"
                 corTexto = '#10b981'; corBorda = '#10b981';
-            } else if (msgUpper.includes("ABERTA")) {
+            }
+            // 4. Porta Aberta (Vermelho)
+            else if (msgUpper.includes("ABERTA")) {
                 corTexto = '#ef4444'; corBorda = '#ef4444';
-            } else if (msgUpper.includes("COMANDO REMOTO")) {
+            }
+            // 5. Comandos Remotos (Azul)
+            else if (msgUpper.includes("COMANDO REMOTO")) {
                 corTexto = '#3b82f6'; corBorda = '#3b82f6';
             }
 

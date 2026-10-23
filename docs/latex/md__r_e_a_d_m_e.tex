@@ -1,0 +1,395 @@
+\chapter{📋 RACK MONITOR — Sistema de Monitoramento de Rack com ESP32 }
+\hypertarget{md__r_e_a_d_m_e}{}\label{md__r_e_a_d_m_e}\index{📋 RACK MONITOR — Sistema de Monitoramento de Rack com ESP32@{📋 RACK MONITOR — Sistema de Monitoramento de Rack com ESP32}}
+\label{md__r_e_a_d_m_e_autotoc_md0}%
+\Hypertarget{md__r_e_a_d_m_e_autotoc_md0}%
+
+
+Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, dashboard web em tempo real e controle remoto via MQTT.
+
+Versão atual: {\bfseries{firmware v6.\+4 / dashboard v3.\+1}} Ambiente de desenvolvimento: {\bfseries{Wokwi (gratuito) + MQTTX (gratuito) + broker público}}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md2}{}\doxysection{\texorpdfstring{🎯 Visão Geral}{🎯 Visão Geral}}\label{md__r_e_a_d_m_e_autotoc_md2}
+Sistema IoT de monitoramento de rack de servidores com ESP32, sensores locais, dashboard web em tempo real e controle remoto via MQTT.\hypertarget{md__r_e_a_d_m_e_autotoc_md3}{}\doxysection{\texorpdfstring{📦 Arquitetura Final}{📦 Arquitetura Final}}\label{md__r_e_a_d_m_e_autotoc_md3}
+
+\begin{DoxyCode}{0}
+\DoxyCodeLine{┌─────────────┐\ \ \ \ \ \ \ \ \ ┌──────────────┐\ \ \ \ \ \ \ \ \ ┌──────────────┐}
+\DoxyCodeLine{│\ \ ESP32\ \ \ \ \ \ │\ \ MQTT\ \ \ │\ \ Broker\ \ \ \ \ \ │\ \ WSS\ \ \ \ │\ \ Site\ Web\ \ \ \ │}
+\DoxyCodeLine{│\ \ (Wokwi)\ \ \ \ │\ ──────►\ │\ \ (emqx.io)\ \ \ │\ ◄─────►\ │\ \ (Local)\ \ \ \ \ │}
+\DoxyCodeLine{│\ \ \ \ \ \ \ \ \ \ \ \ \ │\ ◄──────\ │\ \ \ \ \ \ \ \ \ \ \ \ \ \ │\ \ \ \ \ \ \ \ \ │\ \ \ \ \ \ \ \ \ \ \ \ \ \ │}
+\DoxyCodeLine{└─────────────┘\ \ \ \ \ \ \ \ \ └──────────────┘\ \ \ \ \ \ \ \ \ └──────────────┘}
+\DoxyCodeLine{\ \ \ \ \ │\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ │}
+\DoxyCodeLine{\ \ \ \ \ ├─\ Sensores\ (PIR,\ LDR,\ US,\ Porta,\ RFID)\ \ \ \ \ \ \ \ \ \ \ \ \ │}
+\DoxyCodeLine{\ \ \ \ \ ├─\ Atuadores\ (LED,\ Buzzer,\ OLED)\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ │}
+\DoxyCodeLine{\ \ \ \ \ ├─\ Máquina\ de\ Estados\ (Alarme)\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ │}
+\DoxyCodeLine{\ \ \ \ \ └─\ NVS\ (Persistência)\ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ \ │}
+
+\end{DoxyCode}
+
+
+⚠️ Limitação do Wokwi gratuito: o ESP32 simulado só existe enquanto a aba está aberta. Ao fechar, o dispositivo "{}morre"{}, o LWT dispara offline e o dashboard fica offline. Não há gateway privado nem simulação 24/\+7 no plano gratuito.\hypertarget{md__r_e_a_d_m_e_autotoc_md4}{}\doxysection{\texorpdfstring{🧩 Componentes do Sistema}{🧩 Componentes do Sistema}}\label{md__r_e_a_d_m_e_autotoc_md4}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md5}{}\doxysubsection{\texorpdfstring{1. Código do ESP32 (sketch.\+ino)}{1. Código do ESP32 (sketch.\+ino)}}\label{md__r_e_a_d_m_e_autotoc_md5}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md6}{}\doxysubsubsection{\texorpdfstring{Arquitetura modular com classes}{Arquitetura modular com classes}}\label{md__r_e_a_d_m_e_autotoc_md6}
+
+\begin{DoxyTable}{2}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Classe  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Responsabilidade  \\
+{\bfseries{Relogio}}  &Timestamp via RTC DS3231 (fallback para millis)  \\
+{\bfseries{LDR}}  &Sensor de luz com histerese e debounce  \\
+{\bfseries{Ultrassonico}}  &HC-\/\+SR04 com média móvel de 5 amostras  \\
+{\bfseries{Porta}}  &Switch com debounce de 200ms  \\
+{\bfseries{PIR}}  &Sensor de movimento  \\
+{\bfseries{Botao}}  &Multifunção (curto/\+duplo/\+longo) com debounce  \\
+{\bfseries{Leitor\+RFID}}  &MFRC522 que emite eventos (não decide nada)  \\
+{\bfseries{Led\+RGB}}  &LED de status com PWM  \\
+{\bfseries{Audio}}  &Buzzers + melodias por estado  \\
+{\bfseries{Display\+OLED}}  &Renderização (consome estado, não lê sensores)  \\
+{\bfseries{Alarme}}  &Fonte única de verdade — máquina de estados  \\
+{\bfseries{Notificador\+MQTT}}  &Observador do Alarme + recebe comandos  \\
+{\bfseries{NVS (Preferences)}}  &Persistência de config e contadores  \\
+\end{DoxyTable}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md7}{}\doxysection{\texorpdfstring{Estados do sistema}{Estados do sistema}}\label{md__r_e_a_d_m_e_autotoc_md7}
+
+\begin{DoxyItemize}
+\item 🟢 SEGURO — tudo normal
+\item 🔵 ACESSO\+\_\+\+RFID — cartão acabou de passar
+\item 🟡 AVISO\+\_\+\+SALA — movimento na sala (não invasão!)
+\item 🟡 APROXIMACAO\+\_\+\+RACK — alguém perto do rack
+\item 🔴 EMERGENCIA\+\_\+\+RACK — porta aberta (invasão real)
+\item ⚪ INVASAO\+\_\+\+SALA — reservado (não usado por padrão)
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md8}{}\doxysubsection{\texorpdfstring{Modos}{Modos}}\label{md__r_e_a_d_m_e_autotoc_md8}
+
+\begin{DoxyItemize}
+\item ARMADO — vigia ativo
+\item DESARMADO — manutenção (rearme bloqueado se porta aberta)
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md9}{}\doxysubsection{\texorpdfstring{Filtros implementados}{Filtros implementados}}\label{md__r_e_a_d_m_e_autotoc_md9}
+
+\begin{DoxyTable}{2}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Sensor  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Filtro  \\
+LDR  &histerese 1800–2200 + debounce 800 ms  \\
+Ultrassônico  &média móvel de 5 amostras; rejeita \texorpdfstring{$<$}{<}2 cm e \texorpdfstring{$>$}{>}400 cm  \\
+Porta  &debounce 200 ms  \\
+Botão  &debounce 250 ms + clique duplo \texorpdfstring{$<$}{<}400 ms + clique longo \texorpdfstring{$>$}{>}3000 ms  \\
+Estados  &debounce de transição 300 ms  \\
+\end{DoxyTable}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md10}{}\doxysubsection{\texorpdfstring{🌡️ Alarmes ambientais (v6.\+4)}{🌡️ Alarmes ambientais (v6.\+4)}}\label{md__r_e_a_d_m_e_autotoc_md10}
+
+\begin{DoxyTable}{4}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Faixa  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Temperatura  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Umidade  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Ação  \\
+Normal  &\texorpdfstring{$<$}{<} 30 °C  &\texorpdfstring{$<$}{<} 65 \%  &—  \\
+Alerta  &≥ 30 °C  &≥ 65 \%  &Log WARN + {\ttfamily rack/\+logs}  \\
+Crítico  &≥ 35 °C  &≥ 80 \%  &Log CRIT + {\ttfamily rack/\+logs}  \\
+Taxa de subida  &≥ 1 °\+C/\+min  &—  &Log CRIT + {\ttfamily rack/\+logs}  \\
+\end{DoxyTable}
+
+
+
+\begin{DoxyItemize}
+\item {\bfseries{Histerese:}} 2 °C (temperatura) / 5 \% (umidade) para desligar o alarme.
+\item {\bfseries{Estado consolidado}} ({\ttfamily ambiente}: {\ttfamily OK} / {\ttfamily ALERTA} / {\ttfamily CRITICO}) exposto no JSON de status.
+\item {\bfseries{Limiares configuráveis}} via Serial ({\ttfamily SET TEMP\+\_\+\+ALERTA}, {\ttfamily SET TEMP\+\_\+\+CRIT}, {\ttfamily SET UMID\+\_\+\+ALERTA}, {\ttfamily SET UMID\+\_\+\+CRIT}) e persistidos na NVS.
+\item {\bfseries{Buzzer ambiental opcional}} ({\ttfamily \#define ALARME\+\_\+\+SONORO\+\_\+\+AMBIENTAL 0} por padrão) — respeita prioridade de segurança: nunca bipa durante {\ttfamily EMERGENCIA\+\_\+\+RACK} ou {\ttfamily INVASAO\+\_\+\+SALA}.
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md11}{}\doxysubsection{\texorpdfstring{📡 Comunicação MQTT (v6.\+4)}{📡 Comunicação MQTT (v6.\+4)}}\label{md__r_e_a_d_m_e_autotoc_md11}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md12}{}\doxysubsubsection{\texorpdfstring{Tópicos (com prefixo configurável)}{Tópicos (com prefixo configurável)}}\label{md__r_e_a_d_m_e_autotoc_md12}
+O prefixo {\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234} é {\bfseries{único do seu projeto}}. Troque por algo seu no firmware {\bfseries{e}} no dashboard. Isso {\bfseries{não é segurança}} — só reduz ruído de curiosos no broker público.
+
+
+\begin{DoxyTable}{4}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Tópico  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Direção  &\SetCell{c,bg=\tableheadbgcolor,font=\bfseries}Retain  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Conteúdo  \\
+{\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+status}  &ESP32 → Site  &\SetCell{c}✅  &JSON com estado, modo, sensores, contadores, flags ambientais  \\
+{\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+status/\+lwt}  &Broker → Site  &\SetCell{c}✅  &{\ttfamily \{"{}status"{}:"{}online"{}\}} ou {\ttfamily \{"{}status"{}:"{}offline"{}\}} (LWT)  \\
+{\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+comando}  &Site → ESP32  &\SetCell{c}❌  &{\ttfamily ARMAR}, {\ttfamily DESARMAR}, {\ttfamily STATUS}, {\ttfamily RESET \texorpdfstring{$<$}{<}token\texorpdfstring{$>$}{>}}, {\ttfamily TESTE}  \\
+{\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+logs}  &ESP32 → Site  &\SetCell{c}❌  &Eventos detalhados (porta, cartão, transições, ambiente)  \\
+{\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+heartbeat}  &ESP32 → Site  &\SetCell{c}❌  &Sinal de vida a cada 30 s  \\
+\end{DoxyTable}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md13}{}\doxysubsubsection{\texorpdfstring{Payload de status (exemplo)}{Payload de status (exemplo)}}\label{md__r_e_a_d_m_e_autotoc_md13}
+
+\begin{DoxyCode}{0}
+\DoxyCodeLine{\{}
+\DoxyCodeLine{\ \ "{}estado"{}:\ "{}NORMAL"{},}
+\DoxyCodeLine{\ \ "{}modo"{}:\ "{}ARMADO"{},}
+\DoxyCodeLine{\ \ "{}ts"{}:\ "{}2026-\/10-\/23T19:24:26"{},}
+\DoxyCodeLine{\ \ "{}porta"{}:\ false,}
+\DoxyCodeLine{\ \ "{}luz"{}:\ false,}
+\DoxyCodeLine{\ \ "{}dist\_cm"{}:\ 318.8,}
+\DoxyCodeLine{\ \ "{}ativo"{}:\ false,}
+\DoxyCodeLine{\ \ "{}ip"{}:\ "{}10.10.0.2"{},}
+\DoxyCodeLine{\ \ "{}uid"{}:\ "{}01020304"{},}
+\DoxyCodeLine{\ \ "{}acessos"{}:\ 5,}
+\DoxyCodeLine{\ \ "{}invasoes"{}:\ 1,}
+\DoxyCodeLine{\ \ "{}rearmes"{}:\ 1,}
+\DoxyCodeLine{\ \ "{}alerta\_temp"{}:\ false,}
+\DoxyCodeLine{\ \ "{}critico\_temp"{}:\ false,}
+\DoxyCodeLine{\ \ "{}alerta\_umid"{}:\ false,}
+\DoxyCodeLine{\ \ "{}critico\_umid"{}:\ false,}
+\DoxyCodeLine{\ \ "{}taxa\_temp\_alerta"{}:\ false,}
+\DoxyCodeLine{\ \ "{}ambiente"{}:\ "{}OK"{},}
+\DoxyCodeLine{\ \ "{}temp\_c"{}:\ 24.5,}
+\DoxyCodeLine{\ \ "{}umid\_pct"{}:\ 48.0}
+\DoxyCodeLine{\}}
+
+\end{DoxyCode}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md14}{}\doxysubsection{\texorpdfstring{Features MQTT}{Features MQTT}}\label{md__r_e_a_d_m_e_autotoc_md14}
+
+\begin{DoxyItemize}
+\item ✅ {\bfseries{LWT em tópico dedicado}} ({\ttfamily .../\+status/\+lwt}) — não sobrescreve o status retido real
+\item ✅ {\bfseries{Retain no status}} — novos assinantes recebem o último estado imediatamente
+\item ✅ {\bfseries{Republicação automática}} do status completo após reconectar
+\item ✅ {\bfseries{Rate limit de {\ttfamily STATUS}}} (2 s) — protege contra clientes abusivos
+\item ✅ {\bfseries{{\ttfamily RESET} com token}} — contadores de segurança ({\ttfamily invasoes}, {\ttfamily rearmes}) não são zerados
+\item ✅ {\bfseries{Log de motivo de desconexão}} ({\ttfamily rc=...})
+\item ✅ {\bfseries{Heartbeat a cada 30 s}} — permite ao dashboard detectar queda em 60 s
+\item ✅ {\bfseries{Reconexão automática}} (Wi-\/\+Fi e MQTT a cada 5 s)
+\item ✅ {\bfseries{Buffer MQTT}} aumentado para 512 bytes
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md16}{}\doxysubsection{\texorpdfstring{💾 Persistência NVS}{💾 Persistência NVS}}\label{md__r_e_a_d_m_e_autotoc_md16}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md17}{}\doxysubsubsection{\texorpdfstring{Salvos na flash do ESP32}{Salvos na flash do ESP32}}\label{md__r_e_a_d_m_e_autotoc_md17}
+{\bfseries{Configuração:}}
+\begin{DoxyItemize}
+\item {\ttfamily limiar} (distância de aproximação)
+\item {\ttfamily timeout} (tempo de desarme)
+\item {\ttfamily t\+\_\+alert}, {\ttfamily t\+\_\+crit}, {\ttfamily u\+\_\+alert}, {\ttfamily u\+\_\+crit} (limiares ambientais)
+\end{DoxyItemize}
+
+{\bfseries{Contadores:}}
+\begin{DoxyItemize}
+\item {\ttfamily invasoes}, {\ttfamily aberturas}, {\ttfamily acessos}, {\ttfamily desarmes}, {\ttfamily rearmes}
+\end{DoxyItemize}
+
+{\bfseries{Cartões RFID:}}
+\begin{DoxyItemize}
+\item {\ttfamily total\+\_\+cards} + {\ttfamily card\+\_\+0}, {\ttfamily card\+\_\+1}, … (deduplicados)
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md18}{}\doxysubsubsection{\texorpdfstring{Comportamento}{Comportamento}}\label{md__r_e_a_d_m_e_autotoc_md18}
+
+\begin{DoxyItemize}
+\item Salva ao mudar config ({\ttfamily SET LIMIAR}, {\ttfamily SET TIMEOUT}, {\ttfamily SET TEMP\+\_\+\texorpdfstring{$\ast$}{*}}, {\ttfamily SET UMID\+\_\+\texorpdfstring{$\ast$}{*}}, {\ttfamily RESET}, {\ttfamily ADD\+\_\+\+CARD})
+\item Salva a cada 60 s {\bfseries{apenas se algum contador mudou}} (dirty flag)
+\item Carrega no {\ttfamily setup()} antes de iniciar a lógica
+\end{DoxyItemize}
+
+\begin{quote}
+⚠️ {\bfseries{Limitação do Wokwi:}} a flash virtual é zerada ao parar a simulação. Em hardware real, persiste normalmente. \end{quote}
+
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md20}{}\doxysubsection{\texorpdfstring{🖥️ Dashboard Web (index.\+html)}{🖥️ Dashboard Web (index.\+html)}}\label{md__r_e_a_d_m_e_autotoc_md20}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md21}{}\doxysubsubsection{\texorpdfstring{Design}{Design}}\label{md__r_e_a_d_m_e_autotoc_md21}
+Dark mode com paleta semântica de cores.\hypertarget{md__r_e_a_d_m_e_autotoc_md22}{}\doxysubsubsection{\texorpdfstring{Estrutura visual}{Estrutura visual}}\label{md__r_e_a_d_m_e_autotoc_md22}
+
+\begin{DoxyItemize}
+\item {\bfseries{Header}} — logo + indicador de conexão + status do heartbeat ESP32
+\item {\bfseries{Cards de Status}} — Modo, Estado, Porta, IP, UID
+\item {\bfseries{Cards de Contadores}} — Acessos RFID, Invasões, Rearmes Bloqueados, Temperatura, Umidade
+\item {\bfseries{Botões de Controle}} — Armar, Desarmar, Modo Teste, Reset (token via {\ttfamily prompt}), Atualizar agora
+\item {\bfseries{Gráfico histórico}} — distância e temperatura (Chart.\+js, últimos 60 pontos, persistido em {\ttfamily local\+Storage})
+\item {\bfseries{Log de Eventos}} — ações físicas + comandos remotos
+\item {\bfseries{Histórico de Status}} — transições de estado
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md23}{}\doxysubsubsection{\texorpdfstring{Sistema de cores semântico}{Sistema de cores semântico}}\label{md__r_e_a_d_m_e_autotoc_md23}
+
+\begin{DoxyTable}{3}{}{}{1}
+\SetCell{c,bg=\tableheadbgcolor,font=\bfseries}Cor  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Significado  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Onde aparece  \\
+\SetCell{c}🟢 Verde  &Tudo normal  &Estado {\ttfamily NORMAL}, {\ttfamily ACESSO RFID}, conexão online  \\
+\SetCell{c}🔵 Azul  &Informação/\+manutenção  &Modo {\ttfamily DESARMADO}, IP, acessos  \\
+\SetCell{c}🟡 Amarelo  &Aviso  &{\ttfamily AVISO SALA}, {\ttfamily APROXIMAÇÃO}, ambiente {\ttfamily ALERTA}  \\
+\SetCell{c}🔴 Vermelho  &Perigo/\+crítico  &{\ttfamily EMERGENCIA}, invasão, porta aberta (armado), ambiente {\ttfamily CRITICO}  \\
+\SetCell{c}⚪ Branco  &Neutro  &Modo {\ttfamily ARMADO}, porta fechada  \\
+\end{DoxyTable}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md24}{}\doxysubsubsection{\texorpdfstring{Tecnologias}{Tecnologias}}\label{md__r_e_a_d_m_e_autotoc_md24}
+
+\begin{DoxyItemize}
+\item {\ttfamily mqtt.\+js} (via CDN) — conexão Web\+Socket
+\item {\ttfamily wss:/\+/\+broker.emqx.\+io:8084/\+mqtt} — conexão segura
+\item {\ttfamily Chart.\+js} (via CDN) — gráfico histórico
+\item Fonte Inter (Google Fonts)
+\item Java\+Script puro (sem frameworks)
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md25}{}\doxysubsubsection{\texorpdfstring{Comportamento (v3.\+1)}{Comportamento (v3.\+1)}}\label{md__r_e_a_d_m_e_autotoc_md25}
+
+\begin{DoxyItemize}
+\item {\bfseries{Sem polling agressivo}} — o dashboard se atualiza por:
+\begin{DoxyItemize}
+\item {\bfseries{Retain}} (ao conectar, recebe o último status)
+\item {\bfseries{Transições}} (firmware publica automaticamente)
+\item {\bfseries{Heartbeat}} (a cada 30 s)
+\item {\bfseries{{\ttfamily STATUS} inicial}} (1× ao conectar)
+\end{DoxyItemize}
+\item {\bfseries{LWT}} assinado em {\ttfamily .../\+status/\+lwt} — detecta queda imediata do ESP32
+\item {\bfseries{{\ttfamily RESET} com token}} via {\ttfamily prompt()} — o token não fica hardcoded no HTML
+\item {\bfseries{Botão "{}\+Atualizar agora"{}}} — pede um {\ttfamily STATUS} sob demanda (respeitando o rate limit de 2 s); útil para diagnóstico
+\item {\bfseries{Feedback visual de comandos}} — botões desabilitam até confirmação via {\ttfamily rack/\+status} (ou timeout de 5 s)
+\item {\bfseries{Histórico do gráfico}} persistido em {\ttfamily local\+Storage}
+\item {\bfseries{{\ttfamily temp\+\_\+c: -\/999}}} (DHT falhou) — não é plotado no gráfico
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md26}{}\doxysubsubsection{\texorpdfstring{Correções aplicadas}{Correções aplicadas}}\label{md__r_e_a_d_m_e_autotoc_md26}
+
+\begin{DoxyItemize}
+\item ✅ Bug do {\ttfamily to\+Fixed()} em mensagens sem {\ttfamily dist\+\_\+cm}
+\item ✅ Separação entre logs de eventos e histórico de status
+\item ✅ Timestamp sempre exibido (formato {\ttfamily DD/\+\+MM HH:\+\+MM:SS})
+\item ✅ Quebra de palavras longas ({\ttfamily word-\/break: break-\/word})
+\item ✅ Nomes amigáveis para estados ({\ttfamily NORMAL}, não {\ttfamily SEGURO})
+\item ✅ Notificação de navegador em emergência (sem repetir)
+\item ✅ {\ttfamily reconnect\+Period: 5000} explícito + feedback de reconexão
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md27}{}\doxysubsection{\texorpdfstring{🧪 MQTTX (cliente MQTT gráfico)}{🧪 MQTTX (cliente MQTT gráfico)}}\label{md__r_e_a_d_m_e_autotoc_md27}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md28}{}\doxysubsubsection{\texorpdfstring{O que é}{O que é}}\label{md__r_e_a_d_m_e_autotoc_md28}
+Um cliente MQTT gráfico (Web ou Desktop) que serve como "{}\+Whats\+App"{} para conversar com o ESP32 via broker.\hypertarget{md__r_e_a_d_m_e_autotoc_md29}{}\doxysubsubsection{\texorpdfstring{Por que é útil}{Por que é útil}}\label{md__r_e_a_d_m_e_autotoc_md29}
+
+\begin{DoxyItemize}
+\item {\bfseries{Ver mensagens em tempo real}} — inscrever em {\ttfamily .../\+status} e {\ttfamily .../\+logs}
+\item {\bfseries{Enviar comandos}} — publicar em {\ttfamily .../\+comando} para testar {\ttfamily ARMAR}, {\ttfamily DESARMAR}, {\ttfamily RESET \texorpdfstring{$<$}{<}token\texorpdfstring{$>$}{>}}, {\ttfamily TESTE}
+\item {\bfseries{Testar Retain e LWT}} — verificar se o broker entregou a mensagem retida ou o testamento
+\item {\bfseries{Debug de comunicação}} — isolar se o problema é ESP32, broker ou site
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md30}{}\doxysubsubsection{\texorpdfstring{Como usar (MQTTX Desktop — TCP 1883)}{Como usar (MQTTX Desktop — TCP 1883)}}\label{md__r_e_a_d_m_e_autotoc_md30}
+
+\begin{DoxyEnumerate}
+\item Conecte em {\ttfamily mqtt:/\+/\+broker.emqx.\+io:1883}
+\item Inscreva em {\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\#} (recebe todos os tópicos do prefixo)
+\item Publique em {\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234/\+comando}:
+\begin{DoxyItemize}
+\item {\ttfamily STATUS} — pede status (respeita rate limit de 2 s)
+\item {\ttfamily ARMAR} / {\ttfamily DESARMAR} — muda modo
+\item {\ttfamily TESTE} — inicia autodiagnóstico
+\item {\ttfamily RESET rack2026} — zera contadores operacionais (preserva segurança)
+\end{DoxyItemize}
+\end{DoxyEnumerate}\hypertarget{md__r_e_a_d_m_e_autotoc_md31}{}\doxysubsubsection{\texorpdfstring{MQTTX Web (WSS 8084)}{MQTTX Web (WSS 8084)}}\label{md__r_e_a_d_m_e_autotoc_md31}
+
+\begin{DoxyEnumerate}
+\item Acesse {\ttfamily mqttx.\+app/\+web-\/client}
+\item Conecte em {\ttfamily wss:/\+/\+broker.emqx.\+io:8084/\+mqtt}
+\item Mesmos tópicos/\+comandos do Desktop
+\end{DoxyEnumerate}\hypertarget{md__r_e_a_d_m_e_autotoc_md32}{}\doxysubsubsection{\texorpdfstring{Conceitos MQTT aprendidos}{Conceitos MQTT aprendidos}}\label{md__r_e_a_d_m_e_autotoc_md32}
+
+\begin{DoxyItemize}
+\item {\bfseries{Broker}} — intermediário que recebe e distribui mensagens
+\item {\bfseries{Publish/\+\+Subscribe}} — modelo de comunicação (não é cliente-\/servidor)
+\item {\bfseries{Tópicos}} — "{}canais"{} onde mensagens circulam
+\item {\bfseries{QoS}} — qualidade de serviço (0, 1, 2)
+\item {\bfseries{Retain}} — broker guarda a última mensagem do tópico
+\item {\bfseries{LWT}} — mensagem automática publicada se cliente desconectar sem avisar
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md34}{}\doxysubsection{\texorpdfstring{🖥️ Comandos Serial (firmware)}{🖥️ Comandos Serial (firmware)}}\label{md__r_e_a_d_m_e_autotoc_md34}
+
+\begin{DoxyTable}{2}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Comando  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Descrição  \\
+{\ttfamily SET LIMIAR \texorpdfstring{$<$}{<}5-\/400\texorpdfstring{$>$}{>}}  &Ajusta limiar ultrassônico (persiste)  \\
+{\ttfamily SET TIMEOUT \texorpdfstring{$<$}{<}0-\/1440\texorpdfstring{$>$}{>}}  &Timeout de desarme em minutos (persiste)  \\
+{\ttfamily SET TEMP\+\_\+\+ALERTA \texorpdfstring{$<$}{<}15-\/50\texorpdfstring{$>$}{>}}  &Limiar de temperatura para alerta (persiste)  \\
+{\ttfamily SET TEMP\+\_\+\+CRIT \texorpdfstring{$<$}{<}20-\/60\texorpdfstring{$>$}{>}}  &Limiar de temperatura crítico (persiste)  \\
+{\ttfamily SET UMID\+\_\+\+ALERTA \texorpdfstring{$<$}{<}30-\/90\texorpdfstring{$>$}{>}}  &Limiar de umidade para alerta (persiste)  \\
+{\ttfamily SET UMID\+\_\+\+CRIT \texorpdfstring{$<$}{<}40-\/100\texorpdfstring{$>$}{>}}  &Limiar de umidade crítico (persiste)  \\
+{\ttfamily STATUS}  &Status completo (contadores, limiares, Wi-\/\+Fi, MQTT)  \\
+{\ttfamily ARMAR}  &Força {\ttfamily ARMADO} (se porta fechada)  \\
+{\ttfamily DESARMAR}  &Força {\ttfamily DESARMADO}  \\
+{\ttfamily TESTE}  &Modo autodiagnóstico  \\
+{\ttfamily RTC}  &Mostra hora do RTC  \\
+{\ttfamily RTC YYYY-\/\+MM-\/\+DD HH:\+\+MM:SS}  &Ajusta RTC  \\
+{\ttfamily RESET}  &Zera contadores operacionais (preserva segurança)  \\
+{\ttfamily ADD\+\_\+\+CARD \texorpdfstring{$<$}{<}UID\texorpdfstring{$>$}{>}}  &Cadastra cartão na NVS (deduplicado)  \\
+{\ttfamily LIST\+\_\+\+CARDS}  &Lista cartões autorizados  \\
+{\ttfamily HELP}  &Lista comandos  \\
+\end{DoxyTable}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md35}{}\doxysubsubsection{\texorpdfstring{Botão físico (multifunção)}{Botão físico (multifunção)}}\label{md__r_e_a_d_m_e_autotoc_md35}
+
+\begin{DoxyItemize}
+\item {\bfseries{Curto}} — reset operacional
+\item {\bfseries{Longo}} — rearme forçado
+\item {\bfseries{Duplo}} — modo teste
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md37}{}\doxysubsection{\texorpdfstring{📁 Estrutura de Arquivos}{📁 Estrutura de Arquivos}}\label{md__r_e_a_d_m_e_autotoc_md37}
+\`{}\`{}\`{}text rack-\/monitor/ ├── sketch.\+ino \# Firmware ESP32 (Wokwi) ├── diagram.\+json \# Circuito no Wokwi ├── libraries.\+txt \# Dependências (Pub\+Sub\+Client, etc.) └── server/ └── public/ └── index.\+html \# Dashboard web\hypertarget{md__r_e_a_d_m_e_autotoc_md38}{}\doxysubsubsection{\texorpdfstring{Bibliotecas necessárias ({\ttfamily libraries.\+txt})}{Bibliotecas necessárias ({\ttfamily libraries.\+txt})}}\label{md__r_e_a_d_m_e_autotoc_md38}
+
+\begin{DoxyItemize}
+\item {\ttfamily Pub\+Sub\+Client}
+\item {\ttfamily MFRC522}
+\item {\ttfamily Adafruit SSD1306}
+\item {\ttfamily Adafruit GFX Library}
+\item {\ttfamily RTClib}
+\item {\ttfamily DHT sensor library}
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md40}{}\doxysubsection{\texorpdfstring{🎓 Princípios de Arquitetura Aplicados}{🎓 Princípios de Arquitetura Aplicados}}\label{md__r_e_a_d_m_e_autotoc_md40}
+
+\begin{DoxyEnumerate}
+\item {\bfseries{Sensores não decidem}} — só medem e filtram
+\item {\bfseries{Atuadores não leem sensores}} — só consomem estado
+\item {\bfseries{Alarme é fonte única de verdade}} — recebe struct/\+eventos
+\item {\bfseries{Eventos são fatos}} — botão foi pressionado, cartão foi lido
+\item {\bfseries{Toda transição é logada}} — auditoria completa
+\item {\bfseries{{\ttfamily loop()} só orquestra}} — update → coleta eventos → renderiza
+\item {\bfseries{MQTT é observador}} — comandos remotos pedem via API pública
+\item {\bfseries{NVS é passiva}} — não interfere na lógica do alarme
+\end{DoxyEnumerate}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md42}{}\doxysubsection{\texorpdfstring{✅ O que está funcionando (v6.\+4 / v3.\+1)}{✅ O que está funcionando (v6.\+4 / v3.\+1)}}\label{md__r_e_a_d_m_e_autotoc_md42}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md43}{}\doxysubsubsection{\texorpdfstring{Firmware}{Firmware}}\label{md__r_e_a_d_m_e_autotoc_md43}
+
+\begin{DoxyItemize}
+\item ☑ Sensores com filtros e debounce
+\item ☑ Máquina de estados com transições
+\item ☑ RFID + botão emitindo eventos
+\item ☑ Vigilante com bloqueio de rearme
+\item ☑ Wi-\/\+Fi + MQTT (LWT, Retain, comandos)
+\item ☑ NVS (persistência de config, contadores, limiares ambientais, cartões)
+\item ☑ Logs de auditoria via MQTT
+\item ☑ Alarmes ambientais (temp/\+umid) com histerese, crítico e taxa de subida
+\item ☑ Estado ambiental consolidado no JSON de status
+\item ☑ Rate limit de {\ttfamily STATUS} + {\ttfamily RESET} com token
+\item ☑ Dirty flag para reduzir desgaste da flash
+\end{DoxyItemize}\hypertarget{md__r_e_a_d_m_e_autotoc_md44}{}\doxysubsubsection{\texorpdfstring{Dashboard}{Dashboard}}\label{md__r_e_a_d_m_e_autotoc_md44}
+
+\begin{DoxyItemize}
+\item ☑ Conexão Web\+Socket com broker
+\item ☑ Atualização em tempo real via retain + transições + heartbeat
+\item ☑ Sistema de cores semântico
+\item ☑ Logs separados (eventos + histórico)
+\item ☑ Comandos remotos funcionais ({\ttfamily RESET} com token via {\ttfamily prompt})
+\item ☑ Timestamp em todos os logs
+\item ☑ Gráfico histórico com persistência em {\ttfamily local\+Storage}
+\item ☑ Detecção de queda do ESP32 via LWT + heartbeat
+\item ☑ Sem polling agressivo
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md46}{}\doxysubsection{\texorpdfstring{⚠️ Limitações do ambiente gratuito}{⚠️ Limitações do ambiente gratuito}}\label{md__r_e_a_d_m_e_autotoc_md46}
+
+\begin{DoxyTable}{2}{}{}{1}
+\SetCell{bg=\tableheadbgcolor,font=\bfseries}Limitação  &\SetCell{bg=\tableheadbgcolor,font=\bfseries}Impacto  \\
+Wokwi gratuito só roda com a aba aberta  &ESP32 "{}morre"{} ao fechar; dashboard fica offline  \\
+Gateway público do Wokwi  &ESP32 não recebe conexões de entrada  \\
+Broker público {\ttfamily broker.\+emqx.\+io}  &Sem autenticação; qualquer um pode publicar em {\ttfamily .../\+comando}  \\
+Token de {\ttfamily RESET} no firmware  &{\ttfamily rack2026} é público — troque por um valor seu antes de produção  \\
+Flash virtual do Wokwi zera ao parar  &NVS não persiste entre sessões de simulação  \\
+\end{DoxyTable}
+
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md48}{}\doxysubsection{\texorpdfstring{🚀 Próximos passos sugeridos}{🚀 Próximos passos sugeridos}}\label{md__r_e_a_d_m_e_autotoc_md48}
+
+\begin{DoxyItemize}
+\item {\bfseries{Autenticação MQTT}} — usuário/\+senha no broker (Hive\+MQ Cloud free tier, EMQX Cloud)
+\item {\bfseries{Broker privado}} — em produção, nunca usar {\ttfamily broker.\+emqx.\+io} público
+\item {\bfseries{TLS no firmware}} — {\ttfamily Wi\+Fi\+Client\+Secure} + porta 8883 (testar se o Wokwi gratuito permite)
+\item {\bfseries{Hospedar o dashboard}} — Git\+Hub Pages, Vercel ou Netlify (gratuito)
+\item {\bfseries{Testes em hardware real}} — migrar do Wokwi para ESP32 físico
+\item {\bfseries{Dois sensores DHT}} — entrada e saída de ar do rack (pontos quentes)
+\item {\bfseries{Persistência do histórico}} — backend com Influx\+DB / SQLite para séries temporais
+\item {\bfseries{Notificação por e-\/mail / webhook}} — em vez de só dashboard
+\end{DoxyItemize}
+
+\DoxyHorRuler{0}
+\hypertarget{md__r_e_a_d_m_e_autotoc_md50}{}\doxysubsection{\texorpdfstring{📌 Lembretes importantes}{📌 Lembretes importantes}}\label{md__r_e_a_d_m_e_autotoc_md50}
+
+\begin{DoxyItemize}
+\item {\bfseries{Backup:}} baixe uma cópia do {\ttfamily sketch.\+ino} e {\ttfamily index.\+html} para o seu computador (Wokwi pode perder).
+\item {\bfseries{Bibliotecas:}} devem estar no {\ttfamily libraries.\+txt} do Wokwi.
+\item {\bfseries{{\ttfamily Wokwi-\/\+GUEST}}} — rede Wi-\/\+Fi virtual do Wokwi (sem senha).
+\item {\bfseries{{\ttfamily broker.\+emqx.\+io}}} — broker público gratuito (limite de mensagens).
+\item {\bfseries{Porta 8084 (WSS)}} — usada pelo navegador; {\bfseries{1883 (TCP)}} — usada pelo ESP32.
+\item {\bfseries{Prefixos de tópico}} — o {\ttfamily rack\+\_\+monitor\+\_\+\+ABCD1234} deve ser idêntico no firmware, MQTTX e dashboard.
+\item {\bfseries{Token de RESET}} — troque {\ttfamily rack2026} por um valor seu no firmware antes de qualquer demonstração pública. 
+\end{DoxyItemize}
