@@ -64,7 +64,7 @@
       "top": 432.5,
       "left": -1010.7,
       "rotate": 180,
-      "attrs": {}
+      "attrs": { "distance": "333" }
     },
     { "type": "wokwi-ds1307", "id": "rtc2", "top": -24.6, "left": -710.3, "attrs": {} },
     {
@@ -90,7 +90,15 @@
       "rotate": 90,
       "attrs": { "color": "green", "xray": "1" }
     },
-    { "type": "wokwi-dht22", "id": "dht1", "top": -402.9, "left": -1243.8, "attrs": {} }
+    { "type": "wokwi-dht22", "id": "dht1", "top": -402.9, "left": -1243.8, "attrs": {} },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn1",
+      "top": -316.9,
+      "left": -994.9,
+      "rotate": 90,
+      "attrs": { "color": "red", "xray": "1" }
+    }
   ],
   "connections": [
     [ "esp1:23", "bb2:26t.a", "cyan", [ "v0" ] ],
@@ -189,6 +197,25 @@
     [ "dht1:VCC", "esp:3V3", "red", [] ],
     [ "dht1:GND", "esp:GND.1", "black", [] ],
     [ "dht1:SDA", "esp:13", "green", [] ],
+    [ "esp1:13", "bb1:13b.h", "cyan", [ "v-19.05" ] ],
+    [ "dht1:SDA", "bb4:2b.h", "green", [ "v0" ] ],
+    [ "bb4:2b.i", "bb1:13b.f", "green", [ "v48", "h153.6" ] ],
+    [ "dht1:GND", "bb4:4b.h", "black", [ "v0" ] ],
+    [ "bb1:tn.1", "bb4:4b.i", "black", [ "v-38.5", "h1.6" ] ],
+    [ "dht1:VCC", "bb4:1b.h", "red", [ "v0" ] ],
+    [ "bb1:tp.2", "bb4:1b.i", "red", [ "v-38.1", "h-65.6" ] ],
+    [ "rgb2:R", "bb1:26t.c", "", [ "$bb" ] ],
+    [ "rgb2:COM", "bb1:27t.d", "", [ "$bb" ] ],
+    [ "rgb2:G", "bb1:28t.c", "", [ "$bb" ] ],
+    [ "rgb2:B", "bb1:29t.c", "", [ "$bb" ] ],
+    [ "bz3:1", "bb2:22b.j", "", [ "$bb" ] ],
+    [ "bz3:2", "bb2:21b.j", "", [ "$bb" ] ],
+    [ "bz4:1", "bb2:29b.j", "", [ "$bb" ] ],
+    [ "bz4:2", "bb2:28b.j", "", [ "$bb" ] ],
+    [ "btn2:1.l", "bb3:14t.c", "", [ "$bb" ] ],
+    [ "btn2:2.l", "bb3:12t.c", "", [ "$bb" ] ],
+    [ "btn2:1.r", "bb3:14b.h", "", [ "$bb" ] ],
+    [ "btn2:2.r", "bb3:12b.h", "", [ "$bb" ] ],
     [ "esp1:12", "bb1:15b.j", "", [ "$bb" ] ],
     [ "esp1:13", "bb1:13b.j", "", [ "$bb" ] ],
     [ "esp1:14", "bb1:16b.j", "", [ "$bb" ] ],
@@ -208,25 +235,13 @@
     [ "esp1:D3", "bb1:11b.j", "", [ "$bb" ] ],
     [ "esp1:CMD", "bb1:10b.j", "", [ "$bb" ] ],
     [ "esp1:5V", "bb1:9b.j", "", [ "$bb" ] ],
-    [ "rgb2:R", "bb1:26t.c", "", [ "$bb" ] ],
-    [ "rgb2:COM", "bb1:27t.d", "", [ "$bb" ] ],
-    [ "rgb2:G", "bb1:28t.c", "", [ "$bb" ] ],
-    [ "rgb2:B", "bb1:29t.c", "", [ "$bb" ] ],
-    [ "bz3:1", "bb2:22b.j", "", [ "$bb" ] ],
-    [ "bz3:2", "bb2:21b.j", "", [ "$bb" ] ],
-    [ "bz4:1", "bb2:29b.j", "", [ "$bb" ] ],
-    [ "bz4:2", "bb2:28b.j", "", [ "$bb" ] ],
-    [ "btn2:1.l", "bb3:14t.c", "", [ "$bb" ] ],
-    [ "btn2:2.l", "bb3:12t.c", "", [ "$bb" ] ],
-    [ "btn2:1.r", "bb3:14b.h", "", [ "$bb" ] ],
-    [ "btn2:2.r", "bb3:12b.h", "", [ "$bb" ] ],
-    [ "esp1:13", "bb1:13b.h", "cyan", [ "v-19.05" ] ],
-    [ "dht1:SDA", "bb4:2b.h", "green", [ "v0" ] ],
-    [ "bb4:2b.i", "bb1:13b.f", "green", [ "v48", "h153.6" ] ],
-    [ "dht1:GND", "bb4:4b.h", "black", [ "v0" ] ],
-    [ "bb1:tn.1", "bb4:4b.i", "black", [ "v-38.5", "h1.6" ] ],
-    [ "dht1:VCC", "bb4:1b.h", "red", [ "v0" ] ],
-    [ "bb1:tp.2", "bb4:1b.i", "red", [ "v-38.1", "h-65.6" ] ]
+    [ "esp1:26", "bb1:18b.h", "cyan", [ "v0" ] ],
+    [ "bb3:6b.i", "bb1:18b.f", "white", [ "v38.4", "h-48" ] ],
+    [ "bb1:tn.17", "bb3:8t.b", "black", [ "v-182.5", "h40" ] ],
+    [ "btn1:1.l", "bb3:8t.c", "", [ "$bb" ] ],
+    [ "btn1:2.l", "bb3:6t.c", "", [ "$bb" ] ],
+    [ "btn1:1.r", "bb3:8b.h", "", [ "$bb" ] ],
+    [ "btn1:2.r", "bb3:6b.h", "", [ "$bb" ] ]
   ],
   "dependencies": {}
 }
