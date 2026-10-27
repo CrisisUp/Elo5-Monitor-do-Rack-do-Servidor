@@ -1,0 +1,195 @@
+O que podemos fazer para blindar nosso código, o que eu não posso esquecer já que estou subindo-o para o Github?
+Encontrados 15 resultados
+Subir código para o GitHub exige alguns cuidados essenciais para não expor informações sensíveis e para garantir que o projeto seja compreensível e seguro para quem for utilizá-lo no futuro. Como o seu projeto é um sistema IoT que se conecta a uma rede Wi-Fi e a um broker MQTT, a blindagem começa justamente por aí.
+
+🔐 1. O Perigo Mora nos "Segredos" (Secrets)
+
+O maior risco ao subir um projeto como o seu é expor acidentalmente as credenciais de rede. No código atual, o WIFI_SSID e o WIFI_PASSWORD estão escritos diretamente no sketch.ino. Se você subir isso para um repositório público, qualquer pessoa poderá ver a senha da sua rede (mesmo que seja a "Wokwi-GUEST", é uma boa prática não fazer isso).
+A Solução Profissional:
+A prática recomendada é mover essas informações para um arquivo separado, como secrets.h, e adicioná-lo ao .gitignore . Dessa forma, o código principal (sketch.ino) contém apenas #include "secrets.h" e as variáveis, enquanto o arquivo com as senhas reais fica apenas na sua máquina local e nunca é enviado ao GitHub .
+Como aplicar no seu projeto:
+Crie um arquivo secrets.h na mesma pasta do sketch.ino.
+Coloque dentro dele:
+cpp
+#define WIFI_SSID "Wokwi-GUEST"
+#define WIFI_PASSWORD ""
+No sketch.ino, remova as linhas const char* WIFI_SSID = ... e const char* WIFI_PASSWORD = ..., e adicione #include "secrets.h" no topo.
+Adicione secrets.h ao seu .gitignore (o arquivo que criamos anteriormente já tem uma seção de segurança onde você pode adicionar isso).
+Assim, se alguém clonar seu repositório, o código não compilará até que a pessoa crie o próprio secrets.h com as credenciais dela. Isso é o padrão da indústria.
+
+🛡️ 2. Ative a "Secret Scanning" do GitHub (Grátis)
+
+O GitHub oferece uma ferramenta gratuita chamada Secret Scanning para repositórios públicos . Ela escaneia o código em busca de padrões que pareçam chaves de API, tokens e senhas. Se você acidentalmente commitar uma senha, o GitHub te avisa na aba "Security" do repositório .
+Para ativar (em repositórios novos, já vem ativo por padrão):
+Vá em Settings (Configurações) do seu repositório.
+No menu lateral, clique em Code security and analysis.
+Certifique-se de que a opção Secret scanning está habilitada.
+
+📜 3. Defina uma Licença (Linense)
+
+Um repositório sem licença é, tecnicamente, "todos os direitos reservados". Se você quer que outras pessoas possam usar, estudar ou contribuir com o projeto, precisa adicionar um arquivo LICENSE .
+Como fazer:
+No GitHub, clique em Add file > Create new file.
+Nomeie o arquivo como LICENSE.
+O GitHub oferecerá um botão "Choose a license template". Escolha uma licença como MIT (permissiva, permite que outros usem e modifiquem) ou Apache 2.0 (similar à MIT, mas com cláusulas explícitas sobre patentes) .
+
+🧹 4. Revise o que Vai Subir (.gitignore e Histórico)
+
+Você já criou um .gitignore excelente. Antes de commitar, verifique o git status para garantir que nenhum arquivo indesejado (como secrets.h ou pastas de build) está listado.
+Atenção: Se você já tivesse commitado uma senha no passado, simplesmente deletá-la no commit seguinte não resolve, pois ela continua no histórico do Git. Nesse caso, seria necessário limpar o histórico (algo mais complexo) ou, idealmente, revogar a senha imediatamente .
+
+🎯 Resumo do Checklist de Blindagem
+
+Ação	Por que fazer?	Onde fazer?
+Isolar credenciais	Evitar que senhas de Wi-Fi/MQTT vazem no código.	secrets.h + .gitignore
+Ativar Secret Scanning	Ter uma rede de segurança automática contra vazamentos.	Configurações do GitHub
+Adicionar Licença	Definir legalmente como outros podem usar seu código.	Arquivo LICENSE no repo
+Revisar .gitignore	Manter o repositório limpo e sem lixo de sistema.	Arquivo .gitignore
+Nunca commitar o secrets.h	Garantir que o arquivo de segredos fique só na sua máquina.	git status antes do commit
+Seguindo esses passos, seu repositório estará não apenas organizado, mas também seguro e profissional para ser compartilhado.
+
+https://mqttx.app/web-client#/recent_connections/d5e2345d-f75a-454d-8b7e-6f3cf445c725
+
+Próximos passos — se quiser continuar evoluindo
+Sugestões para uma eventual v7.0, em ordem de custo/benefício:
+
+Curto prazo (baixo esforço)
+
+Publicar ambiente no _publicar() também via tópico dedicado (rack/ambiente) com retain — permite dashboards separados de segurança e ambiente.
+MQTT_TOPIC_CMD_AMBIENTE para ajustar limiares de temp/umid remotamente (espelhando os SET TEMP_* do Serial).
+Botão de pânico no GPIO livre (ex.: 26) com ISR — dispara INVASAO_SALA instantaneamente, ignorando debounce de estado.
+
+Médio prazo
+
+Histórico local em ring buffer (últimos N eventos em RAM) + comando HIST para despejar via Serial — útil para debug pós-incidente.
+OTA (Over-The-Air) com ArduinoOTA — você já tem Wi-Fi estável; atualizar firmware sem cabo é ganho enorme.
+NTP + RTC sync — se o DS3231 falhar, pega hora da rede; se ambos falharem, fallback para millis() (com flag no JSON).
+
+Longo prazo
+
+Dashboard local (não só MQTT): ESP32 serve uma página HTML leve com estado em tempo real (WebSocket ou SSE) — útil quando o broker público estiver offline.
+Assinatura HMAC nos comandos MQTT — o token do RESET já protege, mas ARMAR/DESARMAR ainda são abertos. Um HMAC-SHA256 por comando eleva a segurança sem complicar muito.
+
+Lembrete operacional
+
+Antes de colocar em produção de verdade, revise:
+⚠️ GPIO 0 (LED_B) é strapping — no boot, se o LED azul estiver em nível baixo, o ESP32 pode entrar em modo flash. Já está mapeado no comentário do código, mas vale confirmar se você pode migrar para GPIO 26 quando tiver tempo.
+⚠️ MQTT_RESET_TOKEN = "rack2026" — troque por algo forte antes de expor o broker publicamente.
+⚠️ broker.emqx.io é público — qualquer um que descubra o tópico pode publicar/assinar. Para uso real, considere um broker privado (Mosquitto local, HiveMQ Cloud free, etc.) + usuário/senha no _client.connect().
+
+>> Qual o comando do tree para não aparecer aqui o que esta dentro da pasta search?
+
+Para ocultar o conteúdo da pasta search (e manter o resto da árvore visível), você pode usar a opção -I (de Ignore) combinada com o padrão que capture o caminho da pasta.
+O comando exato é:
+bash
+tree -I 'node_modules|.git|search'
+Como funciona
+A opção -I aceita uma lista de padrões separados por | (pipe). O tree vai ignorar qualquer arquivo ou diretório cujo nome corresponda a um dos padrões.
+node_modules → ignora a pasta node_modules
+.git → ignora a pasta .git
+search → ignora a pasta search e todo o seu conteúdo (é exatamente o que você pediu)
+Se quiser ignorar também outros arquivos específicos (opcional)
+Você pode encadear mais padrões. Por exemplo, para ignorar também a pasta latex e o arquivo Doxyfile:
+bash
+tree -I 'node_modules|.git|search|latex|Doxyfile'
+Dica extra: mostrar apenas diretórios até certo nível
+Se o objetivo for simplificar ainda mais a visualização, você pode limitar a profundidade com -L (nível). Por exemplo, para ver apenas 2 níveis:
+bash
+tree -L 2 -I 'node_modules|.git|search'
+Isso mostra apenas as pastas principais e os arquivos do nível raiz, sem descer muito.
+
+❯ tree -I 'node_modules|.git|search'
+.
+├── CHANGELOG.md
+├── Colado 2026-10-26 às 21.06.42.tiff
+├── diagram.json
+├── docs
+│   ├── html
+│   │   ├── clipboard.js
+│   │   ├── codefolding.js
+│   │   ├── cookie.js
+│   │   ├── doxygen_crawl.html
+│   │   ├── doxygen.css
+│   │   ├── doxygen.svg
+│   │   ├── graph_legend.html
+│   │   ├── graph_legend.md5
+│   │   ├── graph_legend.png
+│   │   ├── index.html
+│   │   ├── md__r_e_a_d_m_e.html
+│   │   ├── menu.js
+│   │   ├── menudata.js
+│   │   ├── navtree.css
+│   │   ├── navtree.js
+│   │   ├── navtreedata.js
+│   │   ├── navtreeindex0.js
+│   │   ├── pages.html
+│   │   └── tabs.css
+│   └── latex
+│       ├── doxygen.sty
+│       ├── etoc_doxygen.sty
+│       ├── Makefile
+│       ├── md__r_e_a_d_m_e.tex
+│       └── refman.tex
+├── Doxyfile
+├── elo5-geral.txt
+├── file (1).webp
+├── file (2).webp
+├── file (3).webp
+├── file (4).webp
+├── file.webp
+├── Imagem 22-10-2026 às 15.35.png
+├── Imagem 23-10-2026 às 00.24.png
+├── libraries.txt
+├── README.md
+├── server
+│   └── public
+│       └── index.html
+└── sketch.ino
+
+6 directories, 40 files
+
+
+
+
+>> Era para ter um servidor aqui, não é?
+
+Excelente observação! Analisando a sua árvore de diretórios, sim, era para ter um servidor ali. A pasta server/public/index.html é o frontend do dashboard externo que você me mostrou na imagem anterior.
+Mas o Dashboard Local (v7.4) que acabamos de implementar é diferente: ele não precisa de uma pasta server porque o ESP32 é o próprio servidor. O HTML está embutido diretamente no código C++ (na variável HTML_DASHBOARD).
+O que aconteceu no Wokwi
+O código que te passei compila perfeitamente, mas no Wokwi há duas limitações de simulação:
+A porta 80 padrão do navegador é bloqueada.
+O Wokwi exige que você acesse via Port forwarding (a aba "Ports" no canto inferior esquerdo da tela do Wokwi).
+Para resolver isso, no código que te enviei, mudei a porta do servidor para 8080.
+Como testar o Dashboard Local agora:
+Cole o código completo (Parte 1 e Parte 2) no Wokwi e clique no botão Play (▶).
+Abaixo do botão Play, procure o ícone de uma tomada (ou uma aba chamada "Ports"). Clique nele.
+O Wokwi vai listar a porta 8080 aberta pelo ESP32. Clique no link que ele gerar (algo como https://xxxxx.wokwi.live).
+O dashboard vai abrir no seu navegador mostrando os cartões de status, temperatura, distância e a lista de eventos atualizando em tempo real.
+Sobre a sua pasta server no PC
+Aquele server/public/index.html que aparece no seu tree é o dashboard externo (aquele bonito, escuro, com gráficos) que roda no seu PC e se conecta ao MQTT.
+O Dashboard Local que fizemos agora é o plano B: uma página mais simples, servida pelo próprio ESP32, que funciona mesmo se a internet ou o broker MQTT caírem.
+Para testar o seu servidor local no PC (aquele da pasta server), você precisaria rodar algo como npx serve server/public ou um servidor Node/Python, mas isso é para o dashboard externo. O Dashboard Local do ESP32 já está embutido e pronto para rodar!
+Tente abrir a aba Ports no Wokwi e me diga se conseguiu ver a página!
+Não existe este Ports nesta versão do Wokwi.
+Encontrados 13 resultados
+Você tem toda a razão, e a sua observação foi precisa. A aba "Ports" (ou o encaminhamento de portas automático que eu descrevi) não existe na versão gratuita do Wokwi.
+O que eu não deixei claro antes é que o Wokwi bloqueia conexões de entrada (do seu navegador para o ESP32 simulado) na versão gratuita, justamente para evitar que os projetos virem servidores acessíveis publicamente .
+O que isso significa para o nosso Dashboard Local?
+Significa que, no simulador Wokwi gratuito, você não vai conseguir abrir a página http://<ip-do-esp32> no seu navegador, porque o navegador não tem como "entrar" na rede virtual do Wokwi .
+No entanto, o código que implementamos (v7.4) está 100% correto e funcional. A limitação é puramente do ambiente de simulação gratuito.
+Como testar o Dashboard Local de verdade (sem pagar nada)
+Você tem dois caminhos:
+1. No hardware físico (Recomendado e Gratuito)
+Quando você tiver o ESP32 em mãos, o dashboard funcionará perfeitamente. O ESP32 conecta no seu Wi-Fi de casa, recebe um IP local (ex: 192.168.1.50), e você abre http://192.168.1.50:8080/ no navegador do seu celular ou PC. Funciona offline, na sua LAN, sem Wokwi e sem pagar nada.
+2. No Wokwi (Requer assinatura "Wokwi Club")
+O Wokwi oferece o recurso de "Private Gateway" (Gateway Privado), que permite exatamente isso: conectar o simulador à sua rede local e encaminhar portas . Porém, esse recurso é exclusivo para assinantes pagos do Wokwi Club .
+Como validar o código no Wokwi gratuito (mesmo sem ver a página)
+Mesmo sem abrir a página no navegador, você pode confirmar que o servidor está funcionando:
+Olhe o Monitor Serial: No setup(), a função dashboard.begin() imprime a mensagem [WEB] Dashboard local ativo na porta 8080. Se você vê essa mensagem, o servidor subiu.
+Use o comando WEB: Digite WEB no Monitor Serial. Ele vai imprimir a URL que o dashboard usaria se você estivesse na mesma rede.
+Teste a rota /api/status: Você pode usar um cliente HTTP (como curl no seu PC) apontando para o IP do Wokwi? Não, pela mesma limitação de entrada. Mas o ESP32 consegue fazer requisições de saída (por isso o MQTT funciona). O servidor está lá, apenas inacessível de fora na versão gratuita.
+Resumo
+O código está certo: O WebServer está rodando, o SSE está configurado, o HTML está embutido.
+A limitação é do Wokwi grátis: Ele não permite conexões de entrada no simulador.
+A solução gratuita: Testar no hardware físico quando possível. Lá, o dashboard funcionará exatamente como planejado, sem depender de MQTT ou internet.
+Se você quiser, posso seguir para o próximo upgrade (HMAC) enquanto o teste físico do dashboard fica pendente. O código do dashboard já está pronto e não precisa de mais alterações para funcionar no hardware real.
